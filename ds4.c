@@ -2135,6 +2135,53 @@ static bool read_f32_binary_file(const char *path, float *data, uint64_t n) {
     return true;
 }
 
+/* Load a directional steering file in either of its two shapes.
+ *
+ * A plain file is `n_layers` rows: one read direction per transformer layer,
+ * and the projection removes the component along it.  A REDIRECT file is twice
+ * that — the same read directions, followed by one write direction per layer —
+ * and lets the projection deposit what it removed along a different direction.
+ * That second half is what a token *replacement* needs: "read along A, write
+ * along B" cannot be said with one direction, because the removal and the
+ * addition point different ways.
+ *
+ * The byte count is the format tag.  Nothing else in the file identifies it, and
+ * guessing would be worse than asking: a redirect file read as a plain one is a
+ * valid projection using half the data, which runs and quietly steers wrong.
+ * Returns a malloc'd buffer of `*n_rows` rows, or NULL after naming the problem.
+ */
+static float *load_directional_steering_file(
+        const char *path,
+        uint32_t    n_layers,
+        bool       *has_redirect) {
+    struct stat st;
+    if (stat(path, &st) != 0) {
+        fprintf(stderr, "ds4: failed to stat %s: %s\n", path, strerror(errno));
+        return NULL;
+    }
+    const uint64_t plain = (uint64_t)n_layers * DS4_N_EMBD * sizeof(float);
+    const uint64_t redirect = 2u * plain;
+    const uint64_t size = (uint64_t)st.st_size;
+    if (size != plain && size != redirect) {
+        fprintf(stderr,
+                "ds4: %s has size %llu bytes, expected %llu (directions) "
+                "or %llu (directions + redirect targets)\n",
+                path,
+                (unsigned long long)size,
+                (unsigned long long)plain,
+                (unsigned long long)redirect);
+        return NULL;
+    }
+    *has_redirect = size == redirect;
+    const uint64_t n = size / sizeof(float);
+    float *dirs = xmalloc((size_t)size);
+    if (!read_f32_binary_file(path, dirs, n)) {
+        free(dirs);
+        return NULL;
+    }
+    return dirs;
+}
+
 static bool cpu_directional_steering_enabled(
         const float *dirs,
         float        scale);
@@ -17478,6 +17525,11 @@ typedef struct {
     ds4_gpu_tensor *directional_steering_dirs_by_tier[DS4_MAX_GPUS];
     float directional_steering_attn_scale;
     float directional_steering_ffn_scale;
+    /* Non-zero only when the file carried write directions; it is both the
+     * "redirect is available" flag and the layer stride to that second half. */
+    uint32_t directional_steering_redirect_layers;
+    float directional_steering_attn_redirect;
+    float directional_steering_ffn_redirect;
     /* Directional PROBE: read-only logging of dot(ffn_out, direction) for a
      * dictionary of directions, at the same graph point steering acts on.
      * Class P like the steering dictionary; the output ring and the log are
@@ -18227,8 +18279,11 @@ static bool metal_graph_load_directional_steering(
         ds4_gpu_graph *g,
         const char      *path,
         float            attn_scale,
-        float            ffn_scale) {
-    if (attn_scale == 0.0f && ffn_scale == 0.0f) return true;
+        float            ffn_scale,
+        float            attn_redirect,
+        float            ffn_redirect) {
+    if (attn_scale == 0.0f && ffn_scale == 0.0f &&
+        attn_redirect == 0.0f && ffn_redirect == 0.0f) return true;
 
     if (!path || !path[0]) {
         fprintf(stderr, "ds4: directional steering needs --dir-steering-file\n");
@@ -18237,9 +18292,18 @@ static bool metal_graph_load_directional_steering(
 
     const uint32_t n_layers = directional_steering_layer_count();
     if (n_layers == 0) return false;
-    const uint64_t n = (uint64_t)n_layers * DS4_N_EMBD;
-    float *dirs = xmalloc((size_t)n * sizeof(dirs[0]));
-    bool ok = read_f32_binary_file(path, dirs, n);
+    bool has_redirect = false;
+    float *dirs = load_directional_steering_file(path, n_layers, &has_redirect);
+    if (!dirs) return false;
+    if ((attn_redirect != 0.0f || ffn_redirect != 0.0f) && !has_redirect) {
+        fprintf(stderr,
+                "ds4: --dir-steering-redirect needs a file carrying write "
+                "directions; %s has only the read half\n", path);
+        free(dirs);
+        return false;
+    }
+    const uint64_t n = (uint64_t)(has_redirect ? 2u * n_layers : n_layers) * DS4_N_EMBD;
+    bool ok = true;
     if (ok) {
         /* Replicate the directions buffer onto every Class P tier slot that
          * has any other Class P scratch allocated (used_tier marker is the
@@ -18268,19 +18332,30 @@ static bool metal_graph_load_directional_steering(
     }
     g->directional_steering_attn_scale = attn_scale;
     g->directional_steering_ffn_scale = ffn_scale;
-    fprintf(stderr, "ds4: directional steering enabled: %s attn=%g ffn=%g\n",
-            path, (double)attn_scale, (double)ffn_scale);
+    g->directional_steering_redirect_layers = has_redirect ? n_layers : 0u;
+    g->directional_steering_attn_redirect = attn_redirect;
+    g->directional_steering_ffn_redirect = ffn_redirect;
+    fprintf(stderr,
+            "ds4: directional steering enabled: %s attn=%g ffn=%g%s\n",
+            path, (double)attn_scale, (double)ffn_scale,
+            has_redirect ? " (with redirect targets)" : "");
+    if (has_redirect) {
+        fprintf(stderr, "ds4: directional redirect: attn=%g ffn=%g\n",
+                (double)attn_redirect, (double)ffn_redirect);
+    }
     return true;
 }
 
 static bool metal_graph_directional_steering_attn_enabled(const ds4_gpu_graph *g) {
     return g && metal_graph_directional_steering_dirs(g) &&
-           g->directional_steering_attn_scale != 0.0f;
+           (g->directional_steering_attn_scale != 0.0f ||
+            g->directional_steering_attn_redirect != 0.0f);
 }
 
 static bool metal_graph_directional_steering_ffn_enabled(const ds4_gpu_graph *g) {
     return g && metal_graph_directional_steering_dirs(g) &&
-           g->directional_steering_ffn_scale != 0.0f;
+           (g->directional_steering_ffn_scale != 0.0f ||
+            g->directional_steering_ffn_redirect != 0.0f);
 }
 
 static bool metal_graph_apply_directional_steering(
@@ -18288,14 +18363,18 @@ static bool metal_graph_apply_directional_steering(
         ds4_gpu_tensor *x,
         uint32_t          il,
         uint32_t          rows,
-        float             scale) {
-    if (!g || !metal_graph_directional_steering_dirs(g) || scale == 0.0f) return true;
+        float             scale,
+        float             redirect) {
+    if (!g || !metal_graph_directional_steering_dirs(g)) return true;
+    if (scale == 0.0f && redirect == 0.0f) return true;
     return ds4_gpu_directional_steering_project_tensor(x,
                                             metal_graph_directional_steering_dirs(g),
                                             il,
                                             DS4_N_EMBD,
                                             rows,
-                                            scale) != 0;
+                                            scale,
+                                            g->directional_steering_redirect_layers,
+                                            redirect) != 0;
 }
 
 static bool metal_graph_apply_directional_steering_attn(
@@ -18303,7 +18382,10 @@ static bool metal_graph_apply_directional_steering_attn(
         ds4_gpu_tensor *x,
         uint32_t          il,
         uint32_t          rows) {
-    return metal_graph_apply_directional_steering(g, x, il, rows, g ? g->directional_steering_attn_scale : 0.0f);
+    return metal_graph_apply_directional_steering(
+            g, x, il, rows,
+            g ? g->directional_steering_attn_scale : 0.0f,
+            g ? g->directional_steering_attn_redirect : 0.0f);
 }
 
 static bool metal_graph_apply_directional_steering_ffn(
@@ -18311,7 +18393,10 @@ static bool metal_graph_apply_directional_steering_ffn(
         ds4_gpu_tensor *x,
         uint32_t          il,
         uint32_t          rows) {
-    return metal_graph_apply_directional_steering(g, x, il, rows, g ? g->directional_steering_ffn_scale : 0.0f);
+    return metal_graph_apply_directional_steering(
+            g, x, il, rows,
+            g ? g->directional_steering_ffn_scale : 0.0f,
+            g ? g->directional_steering_ffn_redirect : 0.0f);
 }
 
 static bool metal_graph_configure_dspark_capture(
@@ -45061,6 +45146,10 @@ struct ds4_engine {
     bool dspark_confidence_threshold_set;
     char *directional_steering_file;
     float *directional_steering_dirs;
+    /* Parsed and validated, never applied: the CPU reference path runs the
+     * plain projection only (see cpu_load_directional_steering). */
+    float directional_steering_attn_redirect;
+    float directional_steering_ffn_redirect;
     float directional_steering_attn_scale;
     float directional_steering_ffn_scale;
     int power_percent;
@@ -45344,13 +45433,29 @@ static bool cpu_load_directional_steering(ds4_engine *e) {
         return false;
     }
 
+    /* The redirect term lives in the Metal graph only.  Threading it through the
+     * CPU reference would touch fifteen signatures on a path AGENT.md keeps for
+     * debugging, and a CPU run that silently dropped the write direction would
+     * "work" while steering something other than what was asked for — so this
+     * refuses instead. */
+    if (e->directional_steering_attn_redirect != 0.0f ||
+        e->directional_steering_ffn_redirect != 0.0f) {
+        fprintf(stderr,
+                "ds4: directional redirect is Metal-only; the CPU backend runs "
+                "the plain projection. Drop --dir-steering-redirect-* or use "
+                "the Metal backend.\n");
+        return false;
+    }
+
     const uint32_t n_layers = directional_steering_layer_count();
     if (n_layers == 0) return false;
-    const uint64_t n = (uint64_t)n_layers * DS4_N_EMBD;
-    e->directional_steering_dirs = xmalloc((size_t)n * sizeof(e->directional_steering_dirs[0]));
-    if (!read_f32_binary_file(path, e->directional_steering_dirs, n)) {
-        free(e->directional_steering_dirs);
-        e->directional_steering_dirs = NULL;
+    bool has_redirect = false;
+    /* A redirect file is accepted here and its write half ignored: the read
+     * directions are the same tensors either way, so the plain projection this
+     * backend runs is exactly the one the file's first half describes. */
+    e->directional_steering_dirs =
+        load_directional_steering_file(path, n_layers, &has_redirect);
+    if (!e->directional_steering_dirs) {
         fprintf(stderr, "ds4: failed to load directional steering vectors from %s\n", path);
         return false;
     }
@@ -48048,13 +48153,17 @@ static bool glm_graph_apply_directional_steering(
     if (!g || !x || rows == 0 || scale == 0.0f) return true;
     const int tier = glm_graph_directional_steering_tier(g, il);
     if (tier < 0 || !g->directional_steering_dirs_by_tier[tier]) return false;
+    /* GLM has no redirect plumbing yet: 0 here is the plain projection it has
+     * always run, unchanged by the DeepSeek-V4 redirect work. */
     return ds4_gpu_directional_steering_project_tensor(
             x,
             g->directional_steering_dirs_by_tier[tier],
             il,
             DS4_N_EMBD,
             rows,
-            scale) != 0;
+            scale,
+            0u,
+            0.0f) != 0;
 }
 
 static bool glm_graph_apply_directional_steering_attn(
@@ -60869,14 +60978,18 @@ static bool qwen4_graph_load_steering(ds4_qwen4_gpu_graph *g,
 
 static bool qwen4_graph_apply_steering_attn(ds4_qwen4_gpu_graph *g, uint32_t il, uint32_t T) {
     if (!g || !g->steer_dirs || g->steer_attn_scale == 0.0f) return true;
+    /* Qwen has no redirect plumbing yet: 0 here is the plain projection it
+     * has always run, unchanged by the DeepSeek-V4 redirect work. */
     return ds4_gpu_directional_steering_project_tensor(
-               g->blk, g->steer_dirs, il, DS4_N_EMBD, T, g->steer_attn_scale) != 0;
+               g->blk, g->steer_dirs, il, DS4_N_EMBD, T, g->steer_attn_scale,
+               0u, 0.0f) != 0;
 }
 
 static bool qwen4_graph_apply_steering_ffn(ds4_qwen4_gpu_graph *g, uint32_t il, uint32_t T) {
     if (!g || !g->steer_dirs || g->steer_ffn_scale == 0.0f) return true;
     return ds4_gpu_directional_steering_project_tensor(
-               g->R, g->steer_dirs, il, DS4_N_EMBD, T * DS4_N_HC, g->steer_ffn_scale) != 0;
+               g->R, g->steer_dirs, il, DS4_N_EMBD, T * DS4_N_HC, g->steer_ffn_scale,
+               0u, 0.0f) != 0;
 }
 
 /* Last prompt token, HC-mean of residual R. Filename uses pos0 so
@@ -62169,6 +62282,8 @@ static int generate_metal_graph_raw_swa(
         const char        * directional_steering_file,
         float               directional_steering_attn,
         float               directional_steering_ffn,
+        float               directional_steering_attn_redirect,
+        float               directional_steering_ffn_redirect,
         ds4_token_emit_fn   emit,
         ds4_generation_done_fn done,
         void              * emit_ud,
@@ -62247,7 +62362,9 @@ static int generate_metal_graph_raw_swa(
     if (!metal_graph_load_directional_steering(&g,
                                                directional_steering_file,
                                                directional_steering_attn,
-                                               directional_steering_ffn)) {
+                                               directional_steering_ffn,
+                                               directional_steering_attn_redirect,
+                                               directional_steering_ffn_redirect)) {
         metal_graph_free(&g);
         return 1;
     }
@@ -68082,6 +68199,8 @@ int ds4_engine_generate_argmax(
                                             e->directional_steering_file,
                                             e->directional_steering_attn_scale,
                                             e->directional_steering_ffn_scale,
+                                            e->directional_steering_attn_redirect,
+                                            e->directional_steering_ffn_redirect,
                                             emit, done, emit_ud,
                                             progress, progress_ud);
 #else
@@ -73749,6 +73868,8 @@ static int ds4_engine_open_internal(ds4_engine **out,
         e->directional_steering_file = ds4_strdup(opt->directional_steering_file);
         e->directional_steering_attn_scale = opt->directional_steering_attn;
         e->directional_steering_ffn_scale = opt->directional_steering_ffn;
+        e->directional_steering_attn_redirect = opt->directional_steering_attn_redirect;
+        e->directional_steering_ffn_redirect = opt->directional_steering_ffn_redirect;
     }
     if (opt->n_threads > 0) g_requested_threads = (uint32_t)opt->n_threads;
     e->placement_ctx_hint = opt->placement_ctx_hint;
@@ -76575,7 +76696,9 @@ int ds4_session_create(ds4_session **out, ds4_engine *e, int ctx_size) {
     if (!metal_graph_load_directional_steering(&s->graph,
                                                e->directional_steering_file,
                                                e->directional_steering_attn_scale,
-                                               e->directional_steering_ffn_scale)) {
+                                               e->directional_steering_ffn_scale,
+                                               e->directional_steering_attn_redirect,
+                                               e->directional_steering_ffn_redirect)) {
         metal_graph_free(&s->graph);
         free(s);
         return 1;

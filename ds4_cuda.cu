@@ -20936,7 +20936,19 @@ extern "C" int ds4_gpu_directional_steering_project_tensor(
         uint32_t                layer,
         uint32_t                width,
         uint32_t                rows,
-        float                   scale) {
+        float                   scale,
+        uint32_t                redirect_layers,
+        float                   redirect) {
+    (void)redirect_layers;
+    /* The redirect term (a write along a second direction) is Metal-only.
+     * Refuse it here rather than run the plain projection: a redirect that
+     * silently dropped its write term would steer something other than what
+     * was asked for. */
+    if (redirect != 0.0f) {
+        fprintf(stderr, "ds4: directional redirect is Metal-only; drop "
+                        "--dir-steering-redirect-* on this backend\n");
+        return 0;
+    }
     if (!x || !directions || width == 0 || rows == 0 || scale == 0.0f) return 0;
     const uint64_t x_bytes = (uint64_t)width * rows * sizeof(float);
     const uint64_t dir_bytes = (uint64_t)(layer + 1u) * width * sizeof(float);
