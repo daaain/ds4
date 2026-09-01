@@ -25,7 +25,37 @@ GLM 5.2 steering is not implemented.
 --dir-steering-file FILE   load one f32 direction per normal model layer
 --dir-steering-ffn F       apply steering after FFN outputs; default is 1 when a file is provided
 --dir-steering-attn F      apply steering after attention outputs; default is 0
+
+--dir-steering-redirect-ffn F   write the removed component back along the
+                                file's redirect direction, at FFN outputs
+--dir-steering-redirect-attn F  the same, at attention outputs
 ```
+
+## Redirection
+
+A plain direction file removes a direction. It cannot *replace* one: the removal
+and the addition point different ways, and there is only one vector per layer to
+say it with.
+
+A **redirect file** is twice as tall — `86 x 4096` for DeepSeek V4 Flash — the
+normal read directions followed by one write direction per layer. With a
+non-zero `--dir-steering-redirect-ffn`, ds4 applies:
+
+```text
+y = y - scale    * v[layer] * dot(v[layer], y)   remove, as before
+      + redirect * w[layer] * dot(v[layer], y)   write it back along w
+```
+
+The component measured along `v` is deposited along `w`: read one concept, write
+another. Concatenate the read directions and the write directions in that order.
+
+The byte count is the format tag, so a `43 x 4096` file keeps working exactly as
+before and an `86 x 4096` one enables the redirect. Asking for a redirect scale
+with a plain file is an error rather than a silent plain projection.
+
+Redirection is Metal-only and DeepSeek V4 Flash only. The CPU reference backend
+runs the plain projection and refuses a redirect scale rather than quietly
+dropping the write term; GLM is unaffected.
 
 The FFN output is usually the best first target because it is late enough in
 each layer to represent behavior, style, and topic signals. Attention steering

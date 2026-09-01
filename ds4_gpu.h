@@ -2426,13 +2426,19 @@ int ds4_gpu_add3_tensor(
         const ds4_gpu_tensor *c,
         uint32_t                n);
 
+/* x -= scale * (dir . x) * dir, plus (when redirect != 0) the write-back term
+ * redirect * (dir . x) * dir_b.  `redirect_layers` is the layer stride to the
+ * write half of `directions`; pass 0 redirect (and any stride) for the plain
+ * projection every caller had before. */
 int ds4_gpu_directional_steering_project_tensor(
         ds4_gpu_tensor       *x,
         const ds4_gpu_tensor *directions,
         uint32_t                layer,
         uint32_t                width,
         uint32_t                rows,
-        float                   scale);
+        float                   scale,
+        uint32_t                redirect_layers,
+        float                   redirect);
 
 /* out[((row * n_layer + layer) * n_slot + slot + h) * n_dir + dir]
  *     = dot(x[row][stream h], directions[dir][layer])

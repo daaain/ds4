@@ -917,6 +917,12 @@ static agent_config parse_options(int argc, char **argv) {
             steering_scale_set = true;
         } else if (!strcmp(arg, "--dir-steering-attn")) {
             c.engine.directional_steering_attn = parse_float_range(need_arg(&i, argc, argv, arg), arg, -100.0f, 100.0f);
+        } else if (!strcmp(arg, "--dir-steering-redirect-ffn")) {
+            c.engine.directional_steering_ffn_redirect = parse_float_range(need_arg(&i, argc, argv, arg), arg, -100.0f, 100.0f);
+            steering_scale_set = true;
+        } else if (!strcmp(arg, "--dir-steering-redirect-attn")) {
+            c.engine.directional_steering_attn_redirect = parse_float_range(need_arg(&i, argc, argv, arg), arg, -100.0f, 100.0f);
+            steering_scale_set = true;
             steering_scale_set = true;
         } else {
             fprintf(stderr, "ds4-agent: unknown option: %s\n", arg);

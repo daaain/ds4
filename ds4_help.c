@@ -237,6 +237,8 @@ static void print_steering(FILE *fp, const help_colors *c) {
     opt(fp, c, "--dir-steering-file FILE", "Load one f32 direction vector per layer.");
     opt(fp, c, "--dir-steering-ffn F", "Apply steering after FFN outputs. Default with file: 1");
     opt(fp, c, "--dir-steering-attn F", "Apply steering after attention outputs. Default: 0");
+    opt(fp, c, "--dir-steering-redirect-ffn F", "Write the removed component back along the file's redirect direction, at FFN outputs.");
+    opt(fp, c, "--dir-steering-redirect-attn F", "Same, at attention outputs. Both need a file with redirect targets (2x rows).");
     fputc('\n', fp);
 }
 

@@ -30928,6 +30928,8 @@ typedef struct {
     uint32_t layer;
     uint32_t n_threads;
     float    scale;
+    uint32_t redirect_offset;
+    float    redirect;
 } ds4_gpu_directional_steering_project_args;
 
 int ds4_gpu_directional_steering_project_tensor(
@@ -30936,9 +30938,12 @@ int ds4_gpu_directional_steering_project_tensor(
         uint32_t                layer,
         uint32_t                width,
         uint32_t                rows,
-        float                   scale) {
+        float                   scale,
+        uint32_t                redirect_layers,
+        float                   redirect) {
     if (!g_initialized && !ds4_gpu_init()) return 0;
-    if (!x || !directions || width == 0 || rows == 0 || scale == 0.0f) return 0;
+    if (!x || !directions || width == 0 || rows == 0) return 0;
+    if (scale == 0.0f && redirect == 0.0f) return 0;
 
     @autoreleasepool {
         id<MTLComputePipelineState> pipeline =
@@ -30948,7 +30953,11 @@ int ds4_gpu_directional_steering_project_tensor(
         id<MTLBuffer> xbuf = ds4_gpu_tensor_buffer(x);
         id<MTLBuffer> dbuf = ds4_gpu_tensor_buffer(directions);
         const uint64_t x_bytes = (uint64_t)width * rows * sizeof(float);
-        const uint64_t dir_bytes = (uint64_t)(layer + 1u) * width * sizeof(float);
+        /* A redirect run reads the write half too, so the buffer has to cover
+         * `redirect_layers + layer + 1` rows rather than `layer + 1`. */
+        const uint64_t dir_rows =
+            redirect != 0.0f ? (uint64_t)redirect_layers + layer + 1u : (uint64_t)layer + 1u;
+        const uint64_t dir_bytes = dir_rows * width * sizeof(float);
         if (!xbuf || !dbuf ||
             ds4_gpu_tensor_bytes(x) < x_bytes ||
             ds4_gpu_tensor_bytes(directions) < dir_bytes) {
@@ -30971,6 +30980,8 @@ int ds4_gpu_directional_steering_project_tensor(
             .layer = layer,
             .n_threads = (uint32_t)nth,
             .scale = scale,
+            .redirect_offset = (uint32_t)((redirect_layers + layer) * width),
+            .redirect = redirect,
         };
 
         id<MTLComputeCommandEncoder> enc = ds4_gpu_compute_encoder(cb);

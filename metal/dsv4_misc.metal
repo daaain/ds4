@@ -395,6 +395,12 @@ struct ds4_metal_args_dsv4_directional_steering_project {
     uint32_t layer;
     uint32_t n_threads;
     float    scale;
+    // Element offset of this layer's WRITE direction inside the same buffer,
+    // meaningful only when redirect != 0.  A redirect file holds the read
+    // directions for every layer followed by the write directions, so the two
+    // halves are one allocation and one upload.
+    uint32_t redirect_offset;
+    float    redirect;
 };
 
 // Optional directional steering projection.
@@ -428,9 +434,24 @@ kernel void kernel_dsv4_directional_steering_project_f32(
         threadgroup_barrier(mem_flags::mem_threadgroup);
     }
 
-    const float coeff = args.scale * scratch[0];
-    for (uint i = tid; i < args.width; i += nth) {
-        xr[i] -= coeff * dir[i];
+    // One read along `dir`, then up to two writes:
+    //     x -= scale * (dir . x) * dir          remove the read direction
+    //     x += redirect * (dir . x) * dir_b     write it back along another
+    // The second term is what makes a *replacement* expressible: the component
+    // is measured along one direction and deposited along a different one.  With
+    // redirect == 0 this is byte-for-byte the original projection.
+    const float projection = scratch[0];
+    const float coeff = args.scale * projection;
+    if (args.redirect != 0.0f) {
+        device const float *dir_b = directions + args.redirect_offset;
+        const float coeff_b = args.redirect * projection;
+        for (uint i = tid; i < args.width; i += nth) {
+            xr[i] += coeff_b * dir_b[i] - coeff * dir[i];
+        }
+    } else {
+        for (uint i = tid; i < args.width; i += nth) {
+            xr[i] -= coeff * dir[i];
+        }
     }
 }
 

@@ -139,6 +139,10 @@ typedef struct {
     const char *expert_profile_path;
     float directional_steering_attn;
     float directional_steering_ffn;
+    /* Write-back scales for the redirect term.  Non-zero requires a steering
+     * file carrying write directions (twice the rows) and the Metal backend. */
+    float directional_steering_attn_redirect;
+    float directional_steering_ffn_redirect;
     int power_percent;
     uint32_t ssd_streaming_cache_experts;
     uint64_t ssd_streaming_cache_bytes;
