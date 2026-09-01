@@ -413,6 +413,17 @@ int ds4_session_set_directional_steering_ffn(ds4_session *s, float scale);
  * Call only while the engine is idle -- the record path takes no lock.
  * Returns 0, or -1 no profiler active, -2 no path known, -3 write failed. */
 int ds4_expert_profile_flush(const char *path, bool reset);
+/* Replace the whole steering configuration (file and scales) on a live session.
+ * `reprefill` true drops the context so the next turn is prefilled under the new
+ * configuration, which is what makes the result equal to having started this way;
+ * false keeps it and knowingly leaves the transcript encoded under the old one. */
+int ds4_session_set_directional_steering(ds4_session *s,
+                                         const char *file,
+                                         float       attn,
+                                         float       ffn,
+                                         float       attn_redirect,
+                                         float       ffn_redirect,
+                                         bool        reprefill);
 bool ds4_session_is_distributed(ds4_session *s);
 void ds4_session_set_progress(ds4_session *s, ds4_session_progress_fn fn, void *ud);
 /* UI-only progress. It may report fine-grained progress inside a prefill chunk;
@@ -464,6 +475,9 @@ bool ds4_session_rebase_vision_state(const ds4_session *s,
 /* True while a session contains, or is actively syncing, image-conditioned
  * state. Such state must not be written to the text-keyed disk KV cache. */
 bool ds4_session_has_vision_state(const ds4_session *s);
+/* Whether any steering scale is live.  The disk KV key carries no steering
+ * identity, so the cache has to ask this before storing or restoring. */
+bool ds4_session_is_steered(const ds4_session *s);
 bool ds4_session_rewrite_requires_rebuild(int live_len, int canonical_len, int common);
 ds4_session_rewrite_result ds4_session_rewrite_from_common(
         ds4_session *s, const ds4_tokens *prompt, int common,

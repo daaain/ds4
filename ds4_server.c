@@ -9320,6 +9320,14 @@ struct server {
     ds4_tp *tp_leader;
     server_slot *slots;
     int slot_count;
+    /* The live steering configuration, mirrored here because ds4_engine is
+     * opaque to the server.  Updated only after every slot accepted a change,
+     * so it never reports a configuration no session is running. */
+    char *steering_file;
+    float steering_ffn;
+    float steering_attn;
+    float steering_redirect_ffn;
+    float steering_redirect_attn;
     int ctx_size;
     bool batched_mode;
     pthread_t *slot_threads;
@@ -10420,6 +10428,15 @@ static bool kv_cache_store_live_prefix_text(server *s, server_slot *slot,
         pthread_mutex_unlock(&s->inference_mu);
         return false;
     }
+    /* Same reasoning one step along: the disk key is the rendered prompt bytes
+     * plus model and quant, and carries no steering identity.  A checkpoint
+     * written under a steering configuration would be restored into a session
+     * running a different one — or none — and every K/V row in it was produced
+     * by layers that wrote something else.  Never persist a steered prefix. */
+    if (ds4_session_is_steered(slot->session)) {
+        pthread_mutex_unlock(&s->inference_mu);
+        return false;
+    }
     pthread_mutex_lock(&s->kv_mu);
     bool ok = ds4_kvstore_store_live_prefix_text(&s->kv, s->engine,
                                                   slot->session,
@@ -10583,6 +10600,14 @@ static int kv_cache_try_load_text(server *s, server_slot *slot,
      * next sync does not reject the fresh payload as a stale image match. */
     if (ds4_session_has_vision_state(slot->session)) {
         ds4_session_invalidate(slot->session);
+    }
+    /* And never restore one into a steered session: the payload holds K/V from
+     * an unsteered forward pass, which is not what this session's layers are
+     * writing.  Prefilling instead is the whole cost this cache exists to
+     * avoid, and paying it is the only correct option. */
+    if (ds4_session_is_steered(slot->session)) {
+        pthread_mutex_unlock(&s->inference_mu);
+        return 0;
     }
     pthread_mutex_lock(&s->kv_mu);
     int loaded = ds4_kvstore_try_load_text(&s->kv, s->engine, slot->session,
@@ -14466,6 +14491,44 @@ static bool handle_tokenize(server *s, int fd, const char *body) {
     return ok;
 }
 
+/* --- runtime steering ----------------------------------------------------
+ *
+ * ds4 takes --dir-steering-file and its scales at launch, which makes changing
+ * a rule a restart.  That is fine for a fixed deployment and wrong for an
+ * interpretability studio, where the rule IS the thing being iterated on.
+ *
+ * GET  /v1/steering  reports the live configuration.
+ * POST /v1/steering  replaces it: {"file":..., "ffn":..., "attn":...,
+ *                    "redirect_ffn":..., "redirect_attn":..., "reprefill":true}
+ *
+ * Every field is optional and omitting one keeps its current value, so nudging
+ * one scale does not require restating the file.  `reprefill` defaults to true:
+ * see ds4_session_set_directional_steering for why a rule change has to drop the
+ * context to mean what it says.
+ */
+static void append_steering_json(buf *b, server *s) {
+    buf_puts(b, "{\"file\":");
+    if (s->steering_file && s->steering_file[0]) {
+        json_escape(b, s->steering_file);   /* writes its own quotes */
+    } else {
+        buf_puts(b, "null");
+    }
+    char tail[224];
+    snprintf(tail, sizeof(tail),
+             ",\"ffn\":%g,\"attn\":%g,\"redirect_ffn\":%g,\"redirect_attn\":%g}\n",
+             (double)s->steering_ffn, (double)s->steering_attn,
+             (double)s->steering_redirect_ffn, (double)s->steering_redirect_attn);
+    buf_puts(b, tail);
+}
+
+static bool send_steering(server *s, int fd) {
+    buf b = {0};
+    append_steering_json(&b, s);
+    bool ok = http_response(fd, s->enable_cors, 200, "application/json", b.ptr);
+    buf_free(&b);
+    return ok;
+}
+
 /* POST /v1/expert_profile  {"path": "...", "reset": true}
  *
  * Takes a routing profile without tearing the engine down.  ds4.c only wrote
@@ -14541,6 +14604,107 @@ static bool handle_flush_expert_profile(server *s, int fd, const char *body) {
 bad:
     free(path);
     http_error(fd, s->enable_cors, 400, "malformed expert profile request");
+    return false;
+}
+
+static bool handle_set_steering(server *s, int fd, const char *body) {
+    if (!s->engine) {
+        http_error(fd, s->enable_cors, 503, "no engine");
+        return false;
+    }
+    char *file = NULL;
+    bool file_set = false, reprefill = true;
+    float ffn = s->steering_ffn;
+    float attn = s->steering_attn;
+    float redirect_ffn = s->steering_redirect_ffn;
+    float redirect_attn = s->steering_redirect_attn;
+
+    const char *p = body ? body : "";
+    json_ws(&p);
+    if (*p != '{') goto bad;
+    p++;
+    json_ws(&p);
+    while (*p && *p != '}') {
+        char *key = NULL;
+        if (!json_string(&p, &key)) goto bad;
+        json_ws(&p);
+        if (*p != ':') { free(key); goto bad; }
+        p++;
+        bool ok = true;
+        if (!strcmp(key, "file")) {
+            json_ws(&p);
+            if (*p == 'n') {              /* explicit null clears the file */
+                ok = json_lit(&p, "null");
+                free(file);
+                file = NULL;
+            } else {
+                free(file);
+                ok = json_string(&p, &file);
+            }
+            file_set = ok;
+        } else if (!strcmp(key, "reprefill")) {
+            ok = json_bool(&p, &reprefill);
+        } else {
+            float *target = NULL;
+            if (!strcmp(key, "ffn")) target = &ffn;
+            else if (!strcmp(key, "attn")) target = &attn;
+            else if (!strcmp(key, "redirect_ffn")) target = &redirect_ffn;
+            else if (!strcmp(key, "redirect_attn")) target = &redirect_attn;
+            if (target) {
+                double v = 0.0;
+                ok = json_number(&p, &v);
+                if (ok) *target = (float)v;
+            } else {
+                ok = json_skip_value(&p);
+            }
+        }
+        free(key);
+        if (!ok) goto bad;
+        json_ws(&p);
+        if (*p == ',') { p++; json_ws(&p); }
+    }
+
+    const char *path = file_set ? file : s->steering_file;
+    /* Serialise against generation: a slot mid-forward-pass must not have its
+     * direction buffer freed under it. */
+    pthread_mutex_lock(&s->inference_mu);
+    int failed = 0;
+    for (int i = 0; i < s->slot_count; i++) {
+        if (!s->slots[i].session) continue;
+        failed |= ds4_session_set_directional_steering(
+                s->slots[i].session, path, attn, ffn,
+                redirect_attn, redirect_ffn, reprefill);
+    }
+    pthread_mutex_unlock(&s->inference_mu);
+
+    if (failed) {
+        /* A partial failure leaves the sessions that did accept it unsteered
+         * (the setter clears rather than half-applies), so the mirror is now
+         * wrong in the safe direction: report nothing steered. */
+        free(s->steering_file);
+        s->steering_file = NULL;
+        s->steering_ffn = s->steering_attn = 0.0f;
+        s->steering_redirect_ffn = s->steering_redirect_attn = 0.0f;
+        http_error(fd, s->enable_cors, 400,
+                   "could not apply steering; see the server log");
+        free(file);
+        return false;
+    }
+    if (file_set) {
+        char *kept = path ? xstrdup(path) : NULL;   /* path may alias `file` */
+        free(s->steering_file);
+        s->steering_file = kept;
+    }
+    s->steering_ffn = ffn;
+    s->steering_attn = attn;
+    s->steering_redirect_ffn = redirect_ffn;
+    s->steering_redirect_attn = redirect_attn;
+    free(file);
+    return send_steering(s, fd);
+
+bad:
+    free(file);
+    http_error(fd, s->enable_cors, 400, "malformed steering request");
     return false;
 }
 
@@ -14677,6 +14841,13 @@ static void *client_main(void *arg) {
     }
     if (!strcmp(hr.path, "/v1/tokenize") && !strcmp(hr.method, "POST")) {
         handle_tokenize(s, fd, hr.body);
+        http_request_free(&hr);
+        goto done;
+    }
+    if (!strcmp(hr.path, "/v1/steering") &&
+        (!strcmp(hr.method, "GET") || !strcmp(hr.method, "POST"))) {
+        if (hr.method[0] == 'G') send_steering(s, fd);
+        else handle_set_steering(s, fd, hr.body);
         http_request_free(&hr);
         goto done;
     }
@@ -15334,6 +15505,14 @@ int main(int argc, char **argv) {
     s.disable_exact_dsml_tool_replay = cfg.disable_exact_dsml_tool_replay;
     s.tool_mem.max_entries = cfg.tool_memory_max_ids;
     s.enable_cors = cfg.enable_cors;
+    /* Seed the steering mirror from the launch flags, so GET /v1/steering
+     * reports what the server actually started with rather than zeros. */
+    s.steering_file = cfg.engine.directional_steering_file
+                    ? xstrdup(cfg.engine.directional_steering_file) : NULL;
+    s.steering_ffn = cfg.engine.directional_steering_ffn;
+    s.steering_attn = cfg.engine.directional_steering_attn;
+    s.steering_redirect_ffn = cfg.engine.directional_steering_ffn_redirect;
+    s.steering_redirect_attn = cfg.engine.directional_steering_attn_redirect;
     s.slots = xmalloc((size_t)slot_count * sizeof(*s.slots));
     memset(s.slots, 0, (size_t)slot_count * sizeof(*s.slots));
     if (s.batched_mode) {

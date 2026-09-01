@@ -209,3 +209,38 @@ Style control:
 The method is not a fine-tune. It is a low-rank runtime edit, so it works best
 for coarse behavior, topic, or style directions that are consistently present in
 the activation captures.
+
+## Changing steering at runtime
+
+`ds4-server` reads and replaces the steering configuration over HTTP, so a rule
+can be iterated on without restarting the model:
+
+```sh
+curl http://127.0.0.1:8000/v1/steering
+curl -X POST http://127.0.0.1:8000/v1/steering \
+  -H 'Content-Type: application/json' \
+  -d '{"file":"/path/to/dirs.f32","ffn":1.0,"redirect_ffn":1.0}'
+```
+
+Every field is optional; omitting one keeps its current value, and `"file":null`
+clears it. Measured swap cost: about a millisecond.
+
+**It drops the session context by default.** Steering changes what every layer
+writes, so a transcript prefilled under the old configuration holds K/V that the
+new one would never have produced; generating on top of it steers the new tokens
+while the context stays encoded the old way. `"reprefill":false` selects that
+hybrid deliberately — which is what the CLI's live `steer` scale-nudge has always
+done, and is reasonable when turning a knob rather than changing a rule.
+
+There is no cheaper correct path. Steering at layer L leaves K/V for layers 0..L
+valid and invalidates L+1 upward, so in principle only the top of the stack needs
+redoing — but the cache holds K/V projections, not the residual stream, and the
+forward pass cannot resume at layer L+1 without the residuals at that depth.
+Recovering them means running layers 0..L again, which is the prefill.
+
+For the same reason, **a steered session neither writes nor reads the disk KV
+cache**. That cache is keyed on the rendered prompt bytes, the model and the
+quantisation — it carries no steering identity, so a checkpoint saved under one
+configuration would be restored into a session running another. This mirrors the
+existing guard for vision state, which is absent from the key for the same kind
+of reason.

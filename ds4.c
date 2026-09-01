@@ -66308,6 +66308,104 @@ int ds4_session_set_directional_steering_ffn(ds4_session *s, float scale) {
     return 0;
 }
 
+/* Replace the whole steering configuration on a live session: a different file,
+ * different scales, or both.
+ *
+ * WHY THIS INVALIDATES THE CONTEXT AND ds4_session_set_directional_steering_ffn
+ * DOES NOT.  That one nudges a scale mid-conversation and deliberately keeps the
+ * KV cache, which is the right trade for turning a knob in a REPL.  It is the
+ * wrong trade for a rule change, and the difference is not a preference:
+ * steering alters what every layer writes, so a context prefilled under the old
+ * configuration holds K and V that the new one would never have produced.
+ * Generating on top of it steers the new tokens while the transcript stays
+ * encoded the old way — a hybrid intervention wearing the name of the one that
+ * was asked for.  `reprefill` false selects that hybrid knowingly.
+ *
+ * There is no cheaper correct path.  Steering at layer L leaves K/V for layers
+ * 0..L valid and invalidates L+1 upward, so in principle only the top of the
+ * stack needs redoing — but the cache holds K/V projections, not the residual
+ * stream, and the forward pass cannot resume at layer L+1 without the residuals
+ * at that depth.  Recovering them means running layers 0..L again, which is the
+ * prefill.  Caching per-layer residuals instead would cost ctx * n_layer *
+ * n_embd * 4 bytes (~2.9 GB at ctx 4096) to save roughly half of a prefill that
+ * already runs at ~55 tok/s.
+ */
+int ds4_session_set_directional_steering(ds4_session *s,
+                                         const char *file,
+                                         float       attn,
+                                         float       ffn,
+                                         float       attn_redirect,
+                                         float       ffn_redirect,
+                                         bool        reprefill) {
+    if (!s || !s->engine) return 1;
+    const float scales[4] = {attn, ffn, attn_redirect, ffn_redirect};
+    for (int i = 0; i < 4; i++) {
+        if (!isfinite(scales[i]) || scales[i] < -100.0f || scales[i] > 100.0f) {
+            fprintf(stderr, "ds4: steering scales must be finite and within +/-100\n");
+            return 1;
+        }
+    }
+    if (s->distributed || s->engine->tp.active) {
+        fprintf(stderr,
+                "ds4: live steering changes are not supported for distributed or network tensor-parallel sessions\n");
+        return 1;
+    }
+#ifdef DS4_NO_GPU
+    fprintf(stderr, "ds4: live steering changes need the Metal backend\n");
+    return 1;
+#else
+    if (ds4_session_is_cpu(s) || ds4_session_is_glm(s)) {
+        fprintf(stderr,
+                "ds4: live steering changes are Metal + DeepSeek V4 only\n");
+        return 1;
+    }
+
+    /* Drop the old directions before loading: the two files need not be the
+     * same shape, since a redirect file is twice as tall as a plain one. */
+    for (int t = 0; t < DS4_MAX_GPUS; t++) {
+        if (!s->graph.directional_steering_dirs_by_tier[t]) continue;
+        ds4_gpu_tensor_free(s->graph.directional_steering_dirs_by_tier[t]);
+        s->graph.directional_steering_dirs_by_tier[t] = NULL;
+    }
+    s->graph.directional_steering_attn_scale = 0.0f;
+    s->graph.directional_steering_ffn_scale = 0.0f;
+    s->graph.directional_steering_attn_redirect = 0.0f;
+    s->graph.directional_steering_ffn_redirect = 0.0f;
+    s->graph.directional_steering_redirect_layers = 0u;
+
+    if (!metal_graph_load_directional_steering(&s->graph, file, attn, ffn,
+                                               attn_redirect, ffn_redirect)) {
+        /* The old directions are already gone, so leave the session unsteered
+         * rather than half-steered; the caller is told and can retry. */
+        s->engine->directional_steering_attn_scale = 0.0f;
+        s->engine->directional_steering_ffn_scale = 0.0f;
+        s->engine->directional_steering_attn_redirect = 0.0f;
+        s->engine->directional_steering_ffn_redirect = 0.0f;
+        ds4_session_invalidate(s);
+        return 1;
+    }
+
+    if (file && file[0]) {
+        char *copy = ds4_strdup(file);
+        if (copy) {
+            free((void *)s->engine->directional_steering_file);
+            s->engine->directional_steering_file = copy;
+        }
+    }
+    s->engine->directional_steering_attn_scale = attn;
+    s->engine->directional_steering_ffn_scale = ffn;
+    s->engine->directional_steering_attn_redirect = attn_redirect;
+    s->engine->directional_steering_ffn_redirect = ffn_redirect;
+
+    ds4_session_dspark_capture_invalidate(s);
+    s->mtp_draft_valid = false;
+    s->greedy_splitkv_segment.len = 0;
+    s->greedy_splitkv_anchor_valid = false;
+    if (reprefill) ds4_session_invalidate(s);
+    return 0;
+#endif
+}
+
 void ds4_session_set_progress(ds4_session *s, ds4_session_progress_fn fn, void *ud) {
     if (!s) return;
     s->progress = fn;
@@ -67502,6 +67600,14 @@ bool ds4_session_rebase_vision_state(const ds4_session *s,
     for (size_t i = 0; i < image_count; i++)
         images[i].token_start = s->checkpoint_images[i].token_start;
     return true;
+}
+
+bool ds4_session_is_steered(const ds4_session *s) {
+    if (!s || !s->engine) return false;
+    return s->engine->directional_steering_attn_scale != 0.0f ||
+           s->engine->directional_steering_ffn_scale != 0.0f ||
+           s->engine->directional_steering_attn_redirect != 0.0f ||
+           s->engine->directional_steering_ffn_redirect != 0.0f;
 }
 
 bool ds4_session_has_vision_state(const ds4_session *s) {
