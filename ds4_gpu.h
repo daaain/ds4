@@ -2434,6 +2434,24 @@ int ds4_gpu_directional_steering_project_tensor(
         uint32_t                rows,
         float                   scale);
 
+/* out[(row * n_layer + layer) * n_dir + dir] = dot(x[row], directions[dir][layer]).
+ * Read-only on x: this is the projection the steering kernel computes, logged
+ * instead of applied, so a probe and a steer necessarily agree.  `directions`
+ * is [n_dir][n_layer][width].  Results accumulate in `out` for readback once
+ * per forward pass, so no GPU synchronize happens per layer. */
+int ds4_gpu_directional_probe_tensor(
+        const ds4_gpu_tensor *x,
+        const ds4_gpu_tensor *directions,
+        ds4_gpu_tensor       *out,
+        uint32_t                layer,
+        uint32_t                n_layer,
+        uint32_t                n_dir,
+        uint32_t                width,
+        uint32_t                rows,
+        uint32_t                n_hc,
+        uint32_t                n_point,
+        uint32_t                point);
+
 int ds4_gpu_router_select_tensor(
         ds4_gpu_tensor       *selected,
         ds4_gpu_tensor       *weights,

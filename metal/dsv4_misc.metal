@@ -434,6 +434,81 @@ kernel void kernel_dsv4_directional_steering_project_f32(
     }
 }
 
+struct ds4_metal_args_dsv4_directional_probe {
+    uint32_t width;      // d_model
+    uint32_t rows;       // token rows in this dispatch
+    uint32_t layer;      // trunk layer being probed
+    uint32_t n_layer;    // stride of the output's layer axis
+    uint32_t n_dir;      // directions in the dictionary
+    uint32_t n_hc;       // 1 for ffn_out; DS4_N_HC for the mHC stack
+    uint32_t n_point;    // probe points per layer (stride of the point axis)
+    uint32_t point;      // which point this dispatch writes
+    uint32_t n_threads;
+};
+
+// Directional PROBE: log dot(row, direction) without touching the activations.
+//
+// This is the read half of kernel_dsv4_directional_steering_project_f32, and
+// deliberately so: the projection a probe reports is computed from the same
+// tensor, at the same point in the graph, with the same reduction as the one
+// steering acts on.  A probe fitted or read anywhere else would not be the same
+// object, which is the whole reason this exists rather than a dump-and-dot.
+//
+// One threadgroup owns one (row, direction) pair.  Nothing is written back into
+// x, so the kernel is safe to run with steering off, and the caller pays no GPU
+// synchronize: results accumulate in `out` and are read back once per forward
+// pass instead of once per layer.
+kernel void kernel_dsv4_directional_probe_f32(
+        constant ds4_metal_args_dsv4_directional_probe & args,
+        device const float *x,
+        device const float *directions,
+        device float *out,
+        threadgroup float *scratch [[threadgroup(0)]],
+        // Metal requires these builtins to be uniformly scalar or uniformly
+        // vector, so the thread index is uint2 to match the 2-D grid.
+        uint2 gid [[threadgroup_position_in_grid]],
+        uint2 tidv [[thread_position_in_threadgroup]]) {
+    const uint tid = tidv.x;
+    const uint row = gid.x;
+    const uint dir = gid.y;
+    if (row >= args.rows || dir >= args.n_dir || args.width == 0) return;
+
+    // n_hc == 1 is ffn_out, a plain d_model row.  n_hc > 1 is the mHC stack,
+    // laid out [stream][d_model] within a position; the dot is taken against
+    // the MEAN over streams, matching core.ds4.engine.stream_reduce, because
+    // that is the reduction the fitted lens and every J-Wash reading use.  The
+    // mean commutes with the dot, so it is summed here and scaled once.
+    device const float *xr = x + (uint64_t)row * args.width * args.n_hc;
+    // The dictionary is [n_dir][n_layer][width], so one direction's layers are
+    // contiguous — the same shape the steering file already uses for its
+    // read/redirect halves, just with more of them.
+    device const float *d =
+        directions + ((uint64_t)dir * args.n_layer + args.layer) * args.width;
+    const uint nth = args.n_threads;
+
+    float sum = 0.0f;
+    for (uint h = 0; h < args.n_hc; h++) {
+        device const float *xh = xr + (uint64_t)h * args.width;
+        for (uint i = tid; i < args.width; i += nth) {
+            sum += xh[i] * d[i];
+        }
+    }
+    scratch[tid] = sum;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    for (uint step = nth >> 1; step > 0; step >>= 1) {
+        if (tid < step) scratch[tid] += scratch[tid + step];
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+
+    if (tid == 0) {
+        const uint64_t slot =
+            (((uint64_t)row * args.n_layer + args.layer) * args.n_point +
+             args.point) * args.n_dir + dir;
+        out[slot] = scratch[0] / (float)args.n_hc;
+    }
+}
+
 // Decode-only DS4 ratio-4 indexer score builder.  One threadgroup owns one
 // compressed row for the current token, stages that 128-wide row once, then
 // walks the 64 indexer heads in four-head groups.  This avoids materializing the

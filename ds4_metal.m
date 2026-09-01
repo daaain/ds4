@@ -30989,6 +30989,91 @@ int ds4_gpu_directional_steering_project_tensor(
     return 1;
 }
 
+typedef struct {
+    uint32_t width;
+    uint32_t rows;
+    uint32_t layer;
+    uint32_t n_layer;
+    uint32_t n_dir;
+    uint32_t n_hc;
+    uint32_t n_point;
+    uint32_t point;
+    uint32_t n_threads;
+} ds4_gpu_directional_probe_args;
+
+int ds4_gpu_directional_probe_tensor(
+        const ds4_gpu_tensor *x,
+        const ds4_gpu_tensor *directions,
+        ds4_gpu_tensor       *out,
+        uint32_t                layer,
+        uint32_t                n_layer,
+        uint32_t                n_dir,
+        uint32_t                width,
+        uint32_t                rows,
+        uint32_t                n_hc,
+        uint32_t                n_point,
+        uint32_t                point) {
+    if (!g_initialized && !ds4_gpu_init()) return 0;
+    if (!x || !directions || !out || width == 0 || rows == 0 || n_dir == 0) return 0;
+
+    @autoreleasepool {
+        id<MTLComputePipelineState> pipeline =
+            ds4_gpu_get_pipeline("kernel_dsv4_directional_probe_f32");
+        if (!pipeline) return 0;
+
+        id<MTLBuffer> xbuf = ds4_gpu_tensor_buffer((ds4_gpu_tensor *)x);
+        id<MTLBuffer> dbuf = ds4_gpu_tensor_buffer((ds4_gpu_tensor *)directions);
+        id<MTLBuffer> obuf = ds4_gpu_tensor_buffer(out);
+        const uint64_t x_bytes = (uint64_t)width * n_hc * rows * sizeof(float);
+        const uint64_t d_bytes = (uint64_t)n_dir * n_layer * width * sizeof(float);
+        const uint64_t o_bytes =
+            (uint64_t)rows * n_layer * n_point * n_dir * sizeof(float);
+        if (!xbuf || !dbuf || !obuf ||
+            ds4_gpu_tensor_bytes((ds4_gpu_tensor *)x) < x_bytes ||
+            ds4_gpu_tensor_bytes((ds4_gpu_tensor *)directions) < d_bytes ||
+            ds4_gpu_tensor_bytes(out) < o_bytes) {
+            fprintf(stderr, "ds4: Metal directional probe received undersized buffers\n");
+            return 0;
+        }
+
+        int owned = 0;
+        id<MTLCommandBuffer> cb = ds4_gpu_command_buffer(&owned);
+        if (!cb) return 0;
+
+        NSUInteger nth = pipeline.maxTotalThreadsPerThreadgroup;
+        if (nth > 256u) nth = 256u;
+        while (nth > width && nth > 1u) nth >>= 1;
+        if (nth == 0) nth = 1;
+
+        ds4_gpu_directional_probe_args args = {
+            .width = width,
+            .rows = rows,
+            .layer = layer,
+            .n_layer = n_layer,
+            .n_dir = n_dir,
+            .n_hc = n_hc,
+            .n_point = n_point,
+            .point = point,
+            .n_threads = (uint32_t)nth,
+        };
+
+        id<MTLComputeCommandEncoder> enc = ds4_gpu_compute_encoder(cb);
+        [enc setComputePipelineState:pipeline];
+        [enc setBytes:&args length:sizeof(args) atIndex:0];
+        [enc setBuffer:xbuf offset:ds4_gpu_tensor_offset((ds4_gpu_tensor *)x) atIndex:1];
+        [enc setBuffer:dbuf offset:ds4_gpu_tensor_offset((ds4_gpu_tensor *)directions) atIndex:2];
+        [enc setBuffer:obuf offset:ds4_gpu_tensor_offset(out) atIndex:3];
+        [enc setThreadgroupMemoryLength:nth * sizeof(float) atIndex:0];
+        [enc dispatchThreadgroups:MTLSizeMake((NSUInteger)rows, (NSUInteger)n_dir, 1)
+             threadsPerThreadgroup:MTLSizeMake(nth, 1, 1)];
+        ds4_gpu_end_compute_encoder(cb, enc);
+
+        if (!ds4_gpu_finish_command_buffer(cb, owned, "directional probe")) return 0;
+    }
+
+    return 1;
+}
+
 static NSUInteger ds4_gpu_bin_threads(uint32_t width, id<MTLComputePipelineState> pipeline) {
     NSUInteger nth_max = pipeline.maxTotalThreadsPerThreadgroup;
     if (nth_max > 256u) nth_max = 256u;

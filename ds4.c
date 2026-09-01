@@ -16066,6 +16066,16 @@ typedef struct {
     ds4_gpu_tensor *directional_steering_dirs_by_tier[DS4_MAX_GPUS];
     float directional_steering_attn_scale;
     float directional_steering_ffn_scale;
+    /* Directional PROBE: read-only logging of dot(ffn_out, direction) for a
+     * dictionary of directions, at the same graph point steering acts on.
+     * Class P like the steering dictionary; the output ring and the log are
+     * single-tier (this is a diagnostic, and multi-GPU probing is not wired). */
+    int directional_probe_init;
+    ds4_gpu_tensor *directional_probe_dirs_by_tier[DS4_MAX_GPUS];
+    ds4_gpu_tensor *directional_probe_out;
+    uint32_t directional_probe_n_dir;
+    uint32_t directional_probe_max_rows;
+    FILE *directional_probe_log;
     bool cuda_tp_decode;
     bool cuda_tp_attn;
     bool cuda_tp_attn_peer_read;
@@ -16320,6 +16330,7 @@ DS4_GPU_GRAPH_CLASS_P_ACCESSOR(batch_routed_down)
 DS4_GPU_GRAPH_CLASS_P_ACCESSOR(batch_routed_out)
 DS4_GPU_GRAPH_CLASS_P_ACCESSOR(batch_ffn_out)
 DS4_GPU_GRAPH_CLASS_P_ACCESSOR(directional_steering_dirs)
+DS4_GPU_GRAPH_CLASS_P_ACCESSOR(directional_probe_dirs)
 
 /* dispatch-loop helpers for multi-tier per-layer execution.
  *
@@ -16620,7 +16631,13 @@ static void metal_graph_free(ds4_gpu_graph *g) {
     for (int t = 0; t < DS4_MAX_GPUS; t++) {
         ds4_gpu_tensor_free(g->directional_steering_dirs_by_tier[t]);
         g->directional_steering_dirs_by_tier[t] = NULL;
+        ds4_gpu_tensor_free(g->directional_probe_dirs_by_tier[t]);
+        g->directional_probe_dirs_by_tier[t] = NULL;
     }
+    ds4_gpu_tensor_free(g->directional_probe_out);
+    g->directional_probe_out = NULL;
+    /* Not closed here: the log outlives any single graph (see the fopen). */
+    g->directional_probe_log = NULL;
     /* Class H free across all tier slots. Non-head slots are
      * NULL and ds4_gpu_tensor_free(NULL) is a no-op. */
     for (int t = 0; t < DS4_MAX_GPUS; t++) {
@@ -17212,8 +17229,199 @@ static void metal_graph_debug_dump_i32_tensor(
     }
 }
 
+/* =========================================================================
+ * Directional probe.
+ * =========================================================================
+ *
+ * Logs dot(ffn_out, direction) for a dictionary of directions, per layer, per
+ * token.  It exists because the alternative -- dumping ffn_out and dotting on
+ * the host -- costs a GPU synchronize and a command-batch restart PER LAYER
+ * (see metal_graph_debug_dump_tensor), which is 43 stalls per token on this
+ * model.  Here the dots accumulate in a device buffer and are read back once,
+ * after the last trunk layer: one stall per forward pass instead of 43.
+ *
+ * It reads the SAME tensor, at the SAME point, with the SAME reduction as
+ * kernel_dsv4_directional_steering_project_f32.  That is deliberate: a
+ * projection logged anywhere else would not be the quantity steering acts on,
+ * and the two could disagree without either being wrong.
+ *
+ * Configured by environment, like the graph dump hooks and for the same reason
+ * -- it is a diagnostic, not a serving feature:
+ *
+ *     DS4_DIR_PROBE_FILE   [n_dir][n_layer][d_model] f32, the same on-disk
+ *                          shape as a steering file with n_dir stacked halves.
+ *     DS4_DIR_PROBE_LOG    output path.
+ *
+ * Log format: a 16-byte header ("DSPB", n_layer, n_dir, reserved), then one
+ * record per forward pass: {pos0, rows, n_dir} as u32, followed by
+ * rows*n_layer*n_dir f32 in [row][layer][dir] order.
+ */
+
+static FILE *g_dir_probe_log;
+
+static bool metal_graph_directional_probe_enabled(const ds4_gpu_graph *g) {
+    return g && g->directional_probe_n_dir > 0 &&
+           metal_graph_directional_probe_dirs((ds4_gpu_graph *)g) != NULL;
+}
+
+#define DS4_DIR_PROBE_MAX_ROWS 8192u
+/* Two probe points per layer: 0 = ffn_out, this layer's FFN WRITE, which is the
+ * tensor steering acts on; 1 = the mHC block output, the ACCUMULATED residual
+ * stream, which is what the unembedding and the fitted lens read.  They are the
+ * same basis but not the same quantity, and a direction can be loud in one and
+ * quiet in the other, so both are logged rather than one being guessed at. */
+#define DS4_DIR_PROBE_N_POINT 2u
+#define DS4_DIR_PROBE_POINT_FFN_OUT 0u
+#define DS4_DIR_PROBE_POINT_BLOCK 1u
+
+static void metal_graph_directional_probe_init(ds4_gpu_graph *g) {
+    if (!g || g->directional_probe_init) return;
+    g->directional_probe_init = 1;
+
+    const char *path = getenv("DS4_DIR_PROBE_FILE");
+    if (!path || !path[0]) return;
+    const char *log_path = getenv("DS4_DIR_PROBE_LOG");
+    if (!log_path || !log_path[0]) {
+        fprintf(stderr, "ds4: DS4_DIR_PROBE_FILE set without DS4_DIR_PROBE_LOG\n");
+        return;
+    }
+
+    const uint32_t n_layers = directional_steering_layer_count();
+    if (n_layers == 0) return;
+
+    struct stat st;
+    if (stat(path, &st) != 0) {
+        fprintf(stderr, "ds4: failed to stat %s: %s\n", path, strerror(errno));
+        return;
+    }
+    const uint64_t per_dir = (uint64_t)n_layers * DS4_N_EMBD * sizeof(float);
+    const uint64_t size = (uint64_t)st.st_size;
+    if (size == 0 || size % per_dir) {
+        fprintf(stderr,
+                "ds4: %s has size %llu bytes, expected a multiple of %llu "
+                "(n_layer=%u x d_model=%u f32 per direction)\n",
+                path, (unsigned long long)size,
+                (unsigned long long)per_dir, n_layers, (unsigned)DS4_N_EMBD);
+        return;
+    }
+    const uint32_t n_dir = (uint32_t)(size / per_dir);
+
+    float *dirs = xmalloc((size_t)size);
+    if (!read_f32_binary_file(path, dirs, size / sizeof(float))) {
+        free(dirs);
+        return;
+    }
+
+    bool ok = true, any = false;
+    for (int t = 0; ok && t < DS4_MAX_GPUS; t++) {
+        if (!g->cur_hc_by_tier[t]) continue;
+        g->directional_probe_dirs_by_tier[t] = ds4_gpu_tensor_alloc_ptr_on(t, (size_t)size);
+        ok = g->directional_probe_dirs_by_tier[t] != NULL &&
+             ds4_gpu_tensor_write(g->directional_probe_dirs_by_tier[t], 0, dirs, size) != 0;
+        if (ok) any = true;
+    }
+    free(dirs);
+    if (!ok || !any) {
+        fprintf(stderr, "ds4: failed to upload directional probe vectors from %s\n", path);
+        return;
+    }
+
+    const uint64_t out_bytes = (uint64_t)DS4_DIR_PROBE_MAX_ROWS * n_layers *
+                               DS4_DIR_PROBE_N_POINT * n_dir * sizeof(float);
+    g->directional_probe_out = ds4_gpu_tensor_alloc_ptr_on(0, (size_t)out_bytes);
+    if (!g->directional_probe_out) {
+        fprintf(stderr, "ds4: failed to allocate directional probe output\n");
+        return;
+    }
+
+    /* Process-level, NOT per-graph: ds4 rebuilds the graph per session, and a
+     * per-graph fopen("wb") silently truncated the log every time a new one
+     * came up -- leaving only the final session's projections behind. */
+    if (!g_dir_probe_log) {
+        g_dir_probe_log = fopen(log_path, "wb");
+        if (!g_dir_probe_log) {
+            fprintf(stderr, "ds4: failed to open %s: %s\n", log_path, strerror(errno));
+            return;
+        }
+        const uint32_t header[4] = { 0x42505344u /* "DSPB" */, n_layers, n_dir,
+                                     DS4_DIR_PROBE_N_POINT };
+        fwrite(header, sizeof(header), 1, g_dir_probe_log);
+    }
+    g->directional_probe_log = g_dir_probe_log;
+
+    g->directional_probe_n_dir = n_dir;
+    g->directional_probe_max_rows = DS4_DIR_PROBE_MAX_ROWS;
+    fprintf(stderr, "ds4: directional probe enabled: %s (%u directions) -> %s\n",
+            path, n_dir, log_path);
+}
+
+/* Read back one forward pass worth of projections and append them.  The single
+ * synchronize this costs is the whole point of the design; it is taken after
+ * the last trunk layer, where the graph would shortly stall anyway. */
+static bool metal_graph_flush_directional_probe(
+        ds4_gpu_graph *g, uint32_t rows, uint32_t pos0) {
+    const uint32_t n_layers = directional_steering_layer_count();
+    const uint64_t n = (uint64_t)rows * n_layers * DS4_DIR_PROBE_N_POINT *
+                       g->directional_probe_n_dir;
+
+    if (ds4_gpu_synchronize() == 0) {
+        fprintf(stderr, "ds4: failed to synchronize before reading directional probe\n");
+        return false;
+    }
+    float *buf = xmalloc((size_t)n * sizeof(buf[0]));
+    bool ok = ds4_gpu_tensor_read(g->directional_probe_out, 0, buf,
+                                  n * sizeof(buf[0])) != 0;
+    if (ok && g->directional_probe_log) {
+        const uint32_t record[3] = { pos0, rows, g->directional_probe_n_dir };
+        (void)0;
+        fwrite(record, sizeof(record), 1, g->directional_probe_log);
+        fwrite(buf, sizeof(buf[0]), (size_t)n, g->directional_probe_log);
+        /* Flush per record: a probe log is read while the run is still going,
+         * and a half-written record is indistinguishable from a short run. */
+        fflush(g->directional_probe_log);
+    }
+    free(buf);
+    if (ds4_gpu_begin_commands() == 0) {
+        fprintf(stderr, "ds4: failed to resume Metal command batch after directional probe\n");
+        return false;
+    }
+    return ok;
+}
+
+static bool metal_graph_apply_directional_probe(
+        ds4_gpu_graph        *g,
+        const ds4_gpu_tensor *x,
+        uint32_t                il,
+        uint32_t                rows,
+        uint32_t                pos0,
+        uint32_t                n_hc,
+        uint32_t                point) {
+    if (!metal_graph_directional_probe_enabled(g)) return true;
+    const uint32_t n_layers = directional_steering_layer_count();
+    /* The MTP layer runs past the trunk and no direction covers it. */
+    if (il >= n_layers) return true;
+    if (rows == 0 || rows > g->directional_probe_max_rows) return true;
+
+    if (!ds4_gpu_directional_probe_tensor(x,
+                                          metal_graph_directional_probe_dirs(g),
+                                          g->directional_probe_out,
+                                          il, n_layers, g->directional_probe_n_dir,
+                                          DS4_N_EMBD, rows, n_hc,
+                                          DS4_DIR_PROBE_N_POINT, point)) {
+        return false;
+    }
+    /* Flush on the LAST point of the LAST layer: by then every slot of this
+     * forward pass has been written, and the block output is the last thing
+     * the trunk produces. */
+    if (point == DS4_DIR_PROBE_POINT_BLOCK && il + 1u == n_layers) {
+        return metal_graph_flush_directional_probe(g, rows, pos0);
+    }
+    return true;
+}
+
 static bool metal_graph_needs_ffn_out(const ds4_gpu_graph *g, uint32_t il, uint32_t pos) {
     return metal_graph_directional_steering_ffn_enabled(g) ||
+           metal_graph_directional_probe_enabled(g) ||
            g->materialize_ffn_out ||
            metal_graph_debug_wants("ffn_out", il, pos);
 }
@@ -22845,6 +23053,7 @@ static bool metal_graph_encode_decode_layer_phase(
         layer->ffn_gate_shexp->type == DS4_TENSOR_Q8_0 &&
         layer->ffn_up_shexp->type == DS4_TENSOR_Q8_0 &&
         g->shared_gate_up_swiglu_fuse;
+    metal_graph_directional_probe_init(g);
     const bool keep_ffn_out = metal_graph_needs_ffn_out(g, il, pos);
 
     /* A concurrent compute encoder removes all of the generic routed-MoE
@@ -25538,6 +25747,10 @@ static bool metal_graph_encode_decode_layer_phase(
         if (ok && keep_ffn_out) {
             metal_graph_debug_dump_tensor("ffn_out", metal_graph_ffn_out(g), DS4_N_EMBD, il, pos);
         }
+        if (ok && metal_graph_directional_probe_enabled(g)) {
+            ok = metal_graph_apply_directional_probe(g, metal_graph_ffn_out(g), il, 1, pos,
+                                                 1u, DS4_DIR_PROBE_POINT_FFN_OUT);
+        }
         if (ok && metal_graph_directional_steering_ffn_enabled(g)) {
             ok = metal_graph_apply_directional_steering_ffn(g, metal_graph_ffn_out(g), il, 1);
         }
@@ -25561,6 +25774,9 @@ static bool metal_graph_encode_decode_layer_phase(
         DS4_METAL_PROFILE_DECODE_STAGE("ffn_hc_post");
         if (ok) {
             metal_graph_debug_dump_tensor("hc_ffn_post", metal_graph_after_ffn_hc(g), hc_dim, il, pos);
+            if (ok) ok = metal_graph_apply_directional_probe(
+                    g, metal_graph_after_ffn_hc(g), il, 1, pos,
+                    DS4_N_HC, DS4_DIR_PROBE_POINT_BLOCK);
         }
         return ok;
     }
@@ -25736,6 +25952,10 @@ static bool metal_graph_encode_decode_layer_phase(
         if (ok && keep_ffn_out) {
             metal_graph_debug_dump_tensor("ffn_out", metal_graph_ffn_out(g), DS4_N_EMBD, il, pos);
         }
+        if (ok && metal_graph_directional_probe_enabled(g)) {
+            ok = metal_graph_apply_directional_probe(g, metal_graph_ffn_out(g), il, 1, pos,
+                                                 1u, DS4_DIR_PROBE_POINT_FFN_OUT);
+        }
         if (ok && metal_graph_directional_steering_ffn_enabled(g)) {
             ok = metal_graph_apply_directional_steering_ffn(g, metal_graph_ffn_out(g), il, 1);
         }
@@ -25759,6 +25979,9 @@ static bool metal_graph_encode_decode_layer_phase(
         DS4_METAL_PROFILE_DECODE_STAGE("ffn_hc_post");
         if (ok) {
             metal_graph_debug_dump_tensor("hc_ffn_post", metal_graph_after_ffn_hc(g), hc_dim, il, pos);
+            if (ok) ok = metal_graph_apply_directional_probe(
+                    g, metal_graph_after_ffn_hc(g), il, 1, pos,
+                    DS4_N_HC, DS4_DIR_PROBE_POINT_BLOCK);
         }
         return ok;
     }
@@ -26238,6 +26461,10 @@ static bool metal_graph_encode_decode_layer_phase(
     if (ok && keep_ffn_out) {
         metal_graph_debug_dump_tensor("ffn_out", metal_graph_ffn_out(g), DS4_N_EMBD, il, pos);
     }
+    if (ok && metal_graph_directional_probe_enabled(g)) {
+        ok = metal_graph_apply_directional_probe(g, metal_graph_ffn_out(g), il, 1, pos,
+                                                 1u, DS4_DIR_PROBE_POINT_FFN_OUT);
+    }
     if (ok && metal_graph_directional_steering_ffn_enabled(g)) {
         ok = metal_graph_apply_directional_steering_ffn(g, metal_graph_ffn_out(g), il, 1);
     }
@@ -26270,6 +26497,9 @@ static bool metal_graph_encode_decode_layer_phase(
 #undef DS4_METAL_PROFILE_DECODE_STAGE
     if (ok) {
         metal_graph_debug_dump_tensor("hc_ffn_post", metal_graph_after_ffn_hc(g), hc_dim, il, pos);
+        if (ok) ok = metal_graph_apply_directional_probe(
+                g, metal_graph_after_ffn_hc(g), il, 1, pos,
+                DS4_N_HC, DS4_DIR_PROBE_POINT_BLOCK);
     }
     return ok;
 }
@@ -31567,6 +31797,7 @@ static bool metal_graph_encode_layer_ffn_batch(
         }
     }
 
+    metal_graph_directional_probe_init(g);
     const bool keep_ffn_out = metal_graph_needs_ffn_out(g, il, pos0);
     bool shared_down_f16 = false;
 
@@ -31914,6 +32145,10 @@ static bool metal_graph_encode_layer_ffn_batch(
         metal_graph_debug_dump_tensor("ffn_out", metal_graph_batch_ffn_out(g),
                                       (uint64_t)n_tokens * DS4_N_EMBD, il, pos0);
     }
+    if (ok && metal_graph_directional_probe_enabled(g)) {
+        ok = metal_graph_apply_directional_probe(g, metal_graph_batch_ffn_out(g), il, n_tokens, pos0,
+                                                 1u, DS4_DIR_PROBE_POINT_FFN_OUT);
+    }
     if (ok && metal_graph_directional_steering_ffn_enabled(g)) {
         ok = metal_graph_apply_directional_steering_ffn(g, metal_graph_batch_ffn_out(g), il, n_tokens);
     }
@@ -31956,6 +32191,9 @@ static bool metal_graph_encode_layer_ffn_batch(
     if (ok) {
         metal_graph_debug_dump_tensor("hc_ffn_post", metal_graph_batch_next_hc(g),
                                       (uint64_t)n_tokens * hc_dim, il, pos0);
+        if (ok) ok = metal_graph_apply_directional_probe(
+                g, metal_graph_batch_next_hc(g), il, n_tokens, pos0,
+                DS4_N_HC, DS4_DIR_PROBE_POINT_BLOCK);
     }
     DS4_METAL_PROFILE_FFN_STAGE("hc_post");
     ds4_gpu_tensor_free(tp_ffn_x);
