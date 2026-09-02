@@ -14047,6 +14047,132 @@ static bool tokenize_request_parse(const char *body, tokenize_request *req) {
     return true;
 }
 
+/* POST /v1/detokenize -- ids back to text, the mirror of the above.
+ *
+ * WHY IT IS NEEDED SEPARATELY. Tokenizing the model's own output and matching
+ * the ids against the probe's decode rows LOOKS like it should work and does
+ * not: BPE re-tokenization is not guaranteed to reproduce the sequence a model
+ * emitted. The model can emit a segmentation that greedy re-encoding of the same
+ * text would split differently, and over a few thousand tokens at least one such
+ * divergence is close to certain -- a 4140-token turn matched only its first 64.
+ * Going the other way has no such failure mode: the ids ARE the sequence, and
+ * ds4_token_text gives each one's bytes.
+ *
+ * Offsets are into the returned text, the same shape /v1/tokenize returns, so a
+ * caller can highlight a token span without knowing which direction the text
+ * came from.
+ *
+ * One edge: a sequence cut mid-character decodes to text ending in a partial
+ * UTF-8 sequence, which is not valid JSON string content. A complete generation
+ * never is, and "exact" would not catch it, so a caller slicing arbitrary
+ * sub-ranges of a sequence should slice by the offsets rather than by id count.
+ */
+/* Parse {"tokens":[int,...]}. On success *ids_out is malloc'd (NULL when the
+ * array is empty) and *n_out is its length; other keys are skipped. Returns
+ * false, with nothing allocated, when "tokens" is missing or not an array of
+ * numbers. Separate from the handler so the contract is testable without an
+ * engine. */
+static bool detokenize_request_parse(const char *body, int **ids_out, int *n_out) {
+    int *ids = NULL;
+    int n = 0, cap = 0;
+    bool got = false;
+    const char *p = body ? body : "";
+    json_ws(&p);
+    if (*p != '{') goto bad;
+    p++;
+    json_ws(&p);
+    while (*p && *p != '}') {
+        char *key = NULL;
+        if (!json_string(&p, &key)) goto bad;
+        json_ws(&p);
+        if (*p != ':') { free(key); goto bad; }
+        p++;
+        bool ok = true;
+        if (!strcmp(key, "tokens")) {
+            json_ws(&p);
+            if (*p != '[') { free(key); goto bad; }
+            p++;
+            json_ws(&p);
+            while (*p && *p != ']') {
+                double v = 0;
+                if (!json_number(&p, &v)) { free(key); goto bad; }
+                if (n == cap) {
+                    cap = cap ? cap * 2 : 256;
+                    ids = xrealloc(ids, (size_t)cap * sizeof(*ids));
+                }
+                ids[n++] = (int)v;
+                json_ws(&p);
+                if (*p == ',') { p++; json_ws(&p); }
+            }
+            if (*p != ']') { free(key); goto bad; }
+            p++;
+            got = true;
+        } else {
+            ok = json_skip_value(&p);
+        }
+        free(key);
+        if (!ok) goto bad;
+        json_ws(&p);
+        if (*p == ',') { p++; json_ws(&p); }
+    }
+    if (*p != '}' || !got) goto bad;
+    *ids_out = ids;
+    *n_out = n;
+    return true;
+
+bad:
+    free(ids);
+    return false;
+}
+
+static bool handle_detokenize(server *s, int fd, const char *body) {
+    ds4_engine *e = s->engine;
+    if (!e) {
+        http_error(fd, s->enable_cors, 503, "no engine");
+        return false;
+    }
+
+    int *ids = NULL;
+    int n = 0;
+    if (!detokenize_request_parse(body, &ids, &n)) {
+        http_error(fd, s->enable_cors, 400,
+                   "malformed detokenize request; expected {\"tokens\":[int,...]}");
+        return false;
+    }
+
+    buf text = {0};
+    buf pieces = {0};
+    const int vocab = ds4_engine_vocab_size(e);
+    for (int i = 0; i < n; i++) {
+        if (ids[i] < 0 || ids[i] >= vocab) {
+            buf_free(&text);
+            buf_free(&pieces);
+            free(ids);
+            http_error(fd, s->enable_cors, 400, "token id out of range");
+            return false;
+        }
+        size_t len = 0;
+        char *piece = ds4_token_text(e, ids[i], &len);
+        buf_printf(&pieces, "%s{\"id\":%d,\"offset\":%zu,\"length\":%zu}",
+                   i ? "," : "", ids[i], text.len, len);
+        for (size_t k = 0; k < len; k++) buf_putc(&text, piece[k]);
+        free(piece);
+    }
+    free(ids);
+
+    buf b = {0};
+    buf_puts(&b, "{\"text\":");
+    json_escape(&b, text.ptr ? text.ptr : "");
+    buf_printf(&b, ",\"token_count\":%d,\"tokens\":[", n);
+    buf_puts(&b, pieces.ptr ? pieces.ptr : "");
+    buf_puts(&b, "]}\n");
+    bool ok = http_response(fd, s->enable_cors, 200, "application/json", b.ptr);
+    buf_free(&b);
+    buf_free(&text);
+    buf_free(&pieces);
+    return ok;
+}
+
 static bool handle_tokenize(server *s, int fd, const char *body) {
     ds4_engine *e = s->engine;
     if (!e) {
@@ -14231,6 +14357,11 @@ static void *client_main(void *arg) {
 
     if (!strcmp(hr.method, "GET") && !strcmp(hr.path, "/v1/models")) {
         send_models(s, fd);
+        http_request_free(&hr);
+        goto done;
+    }
+    if (!strcmp(hr.path, "/v1/detokenize") && !strcmp(hr.method, "POST")) {
+        handle_detokenize(s, fd, hr.body);
         http_request_free(&hr);
         goto done;
     }
@@ -20409,6 +20540,33 @@ static void test_tokenize_request_parse(void) {
     tokenize_request_free(&req);
 }
 
+static void test_detokenize_request_parse(void) {
+    int *ids = NULL;
+    int n = -1;
+    TEST_ASSERT(detokenize_request_parse("{\"tokens\":[6111, 14, 2038]}", &ids, &n));
+    TEST_ASSERT(n == 3 && ids && ids[0] == 6111 && ids[1] == 14 && ids[2] == 2038);
+    free(ids);
+
+    /* Unknown keys are skipped, the way the other request parsers do. */
+    ids = NULL; n = -1;
+    TEST_ASSERT(detokenize_request_parse("{\"model\":\"x\",\"tokens\":[1],\"n\":2}", &ids, &n));
+    TEST_ASSERT(n == 1 && ids && ids[0] == 1);
+    free(ids);
+
+    /* The empty sequence is a valid request for the empty text. */
+    ids = (int *)1; n = -1;
+    TEST_ASSERT(detokenize_request_parse("{\"tokens\":[]}", &ids, &n));
+    TEST_ASSERT(n == 0 && ids == NULL);
+
+    /* Missing, wrongly typed, or truncated: refused, never guessed. */
+    TEST_ASSERT(!detokenize_request_parse("{}", &ids, &n));
+    TEST_ASSERT(!detokenize_request_parse("{\"tokens\":\"6111\"}", &ids, &n));
+    TEST_ASSERT(!detokenize_request_parse("{\"tokens\":[1,\"a\"]}", &ids, &n));
+    TEST_ASSERT(!detokenize_request_parse("{\"tokens\":[1,2", &ids, &n));
+    TEST_ASSERT(!detokenize_request_parse("not json", &ids, &n));
+    TEST_ASSERT(!detokenize_request_parse(NULL, &ids, &n));
+}
+
 static void ds4_server_unit_tests_run(void) {
     test_visible_image_key();
     test_anthropic_tool_image_output();
@@ -20423,6 +20581,7 @@ static void ds4_server_unit_tests_run(void) {
     test_reasoning_effort_mapping();
     test_tokenize_byte_offsets();
     test_tokenize_request_parse();
+    test_detokenize_request_parse();
     test_model_alias_thinking_controls();
     test_api_thinking_controls_parse();
     test_render_think_max_prompt_prefix();
