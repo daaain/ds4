@@ -13931,6 +13931,183 @@ static bool send_models(server *s, int fd) {
     return ok;
 }
 
+/* --- tokenization --------------------------------------------------------
+ *
+ * POST /v1/tokenize renders a request the way /v1/chat/completions would, then
+ * tokenizes it with the same function the prefill uses, and reports a byte
+ * offset for every token.
+ *
+ * WHY IT EXISTS. The in-graph direction probe logs one row per token position
+ * and nothing else -- no ids, no text. Without a way to map a row back to the
+ * bytes that produced it, every probe result is a whole-prompt aggregate and a
+ * response cannot be located inside a document. This is the missing half.
+ *
+ * WHY IT REUSES THE COMPLETION PATH RATHER THAN TOKENIZING DIRECTLY. The whole
+ * value of the answer is that its indices are the SAME indices the prefill
+ * produced. Rendering is where that can silently diverge: the chat template
+ * inserts role markers, tool schemas are rendered ahead of the system message,
+ * and the think mode opens or closes a reasoning block. So this calls
+ * parse_messages, parse_tools_value and render_chat_prompt_text_for_syntax --
+ * the same three the chat handler calls -- and never a private shortcut.
+ *
+ * OFFSETS ARE INTO THE RENDERED TEXT, which is why the response carries it. The
+ * caller never sent those role markers and cannot reconstruct them.
+ *
+ * ONE KNOWN DIVERGENCE: the completion path clamps the think mode to the
+ * context size (ds4_think_mode_for_context). This renders the effort as asked,
+ * because a tokenize request has no max_tokens to derive a context from. Only
+ * "max" against a small context is affected.
+ */
+
+typedef struct {
+    char *text;                 /* the {"text": ...} form */
+    chat_msgs msgs;             /* the {"messages": [...]} form */
+    bool got_messages;
+    char *tool_schemas;
+    tool_schema_orders tool_orders;
+    ds4_think_mode think_mode;
+} tokenize_request;
+
+static void tokenize_request_free(tokenize_request *req) {
+    free(req->text);
+    req->text = NULL;
+    chat_msgs_free(&req->msgs);
+    free(req->tool_schemas);
+    req->tool_schemas = NULL;
+    tool_schema_orders_free(&req->tool_orders);
+}
+
+/* Byte offsets of each token in the text, from the pieces' lengths.
+ *
+ * ds4_token_text decodes the GPT-2 codepoint encoding back to raw bytes and
+ * returns literal special tokens verbatim, so the pieces of a sequence
+ * concatenate to exactly the bytes that were tokenized and a running sum is the
+ * offset. That is a property worth CHECKING rather than trusting: when the total
+ * does not land on the text the offsets point at nothing, and the caller has to
+ * be told rather than handed plausible-looking numbers. Returns whether they
+ * reconstruct the text exactly; the offsets are filled either way. */
+static bool tokenize_byte_offsets(const size_t *piece_lens, int n,
+                                  size_t text_len, size_t *offsets) {
+    size_t at = 0;
+    for (int i = 0; i < n; i++) {
+        offsets[i] = at;
+        at += piece_lens[i];
+    }
+    return at == text_len;
+}
+
+static bool tokenize_request_parse(const char *body, tokenize_request *req) {
+    req->think_mode = DS4_THINK_HIGH;
+    bool thinking_enabled = true;
+    ds4_think_mode effort = DS4_THINK_HIGH;
+    bool got_text = false;
+
+    const char *p = body ? body : "";
+    json_ws(&p);
+    if (*p != '{') return false;
+    p++;
+    json_ws(&p);
+    while (*p && *p != '}') {
+        char *key = NULL;
+        if (!json_string(&p, &key)) return false;
+        json_ws(&p);
+        if (*p != ':') { free(key); return false; }
+        p++;
+        bool ok = true;
+        if (!strcmp(key, "text")) {
+            free(req->text);
+            req->text = NULL;
+            ok = json_string(&p, &req->text);
+            got_text = ok;
+        } else if (!strcmp(key, "messages")) {
+            chat_msgs_free(&req->msgs);
+            ok = parse_messages(&p, &req->msgs);
+            req->got_messages = ok;
+        } else if (!strcmp(key, "tools")) {
+            free(req->tool_schemas);
+            req->tool_schemas = NULL;
+            ok = parse_tools_value(&p, &req->tool_schemas, &req->tool_orders);
+        } else if (!strcmp(key, "reasoning_effort")) {
+            ok = parse_reasoning_effort_value(&p, &effort);
+        } else if (!strcmp(key, "thinking")) {
+            ok = parse_thinking_control_value(&p, &thinking_enabled);
+        } else {
+            ok = json_skip_value(&p);
+        }
+        free(key);
+        if (!ok) return false;
+        json_ws(&p);
+        if (*p == ',') { p++; json_ws(&p); }
+    }
+
+    /* Exactly one input. Accepting both and preferring one silently answers a
+     * question the caller did not ask. */
+    if (got_text == req->got_messages) return false;
+    req->think_mode = think_mode_from_enabled(thinking_enabled, effort);
+    return true;
+}
+
+static bool handle_tokenize(server *s, int fd, const char *body) {
+    ds4_engine *e = s->engine;
+    if (!e) {
+        http_error(fd, s->enable_cors, 503, "no engine");
+        return false;
+    }
+
+    tokenize_request req = {0};
+    if (!tokenize_request_parse(body, &req)) {
+        tokenize_request_free(&req);
+        http_error(fd, s->enable_cors, 400,
+                   "malformed tokenize request; give exactly one of "
+                   "\"text\" or \"messages\"");
+        return false;
+    }
+
+    char *rendered = NULL;
+    if (req.got_messages) {
+        const char *schemas = (req.tool_schemas && req.tool_schemas[0])
+                            ? req.tool_schemas : NULL;
+        rendered = render_chat_prompt_text_for_syntax(
+            server_model_syntax_for_engine(e), &req.msgs, schemas,
+            &req.tool_orders, req.think_mode);
+    } else {
+        rendered = xstrdup(req.text ? req.text : "");
+    }
+
+    ds4_tokens tokens = {0};
+    ds4_tokenize_rendered_chat(e, rendered, &tokens);
+
+    size_t *lens = xmalloc(sizeof(*lens) * (size_t)(tokens.len ? tokens.len : 1));
+    size_t *offsets = xmalloc(sizeof(*offsets) * (size_t)(tokens.len ? tokens.len : 1));
+    for (int i = 0; i < tokens.len; i++) {
+        size_t len = 0;
+        char *piece = ds4_token_text(e, tokens.v[i], &len);
+        lens[i] = len;
+        free(piece);
+    }
+    const bool exact = tokenize_byte_offsets(lens, tokens.len, strlen(rendered), offsets);
+
+    buf b = {0};
+    buf_puts(&b, "{\"rendered\":");
+    json_escape(&b, rendered);          /* writes its own quotes */
+    buf_printf(&b, ",\"token_count\":%d,\"exact\":%s,\"tokens\":[",
+               tokens.len, exact ? "true" : "false");
+    for (int i = 0; i < tokens.len; i++) {
+        buf_printf(&b, "%s{\"id\":%d,\"offset\":%zu,\"length\":%zu}",
+                   i ? "," : "", tokens.v[i], offsets[i], lens[i]);
+    }
+    buf_puts(&b, "]}\n");
+
+    bool ok = http_response(fd, s->enable_cors, 200, "application/json", b.ptr);
+    buf_free(&b);
+    free(lens);
+    free(offsets);
+    free(rendered);
+    ds4_tokens_free(&tokens);
+    tokenize_request_free(&req);
+    return ok;
+}
+
 static void client_done(server *s) {
     pthread_mutex_lock(&s->mu);
     if (s->clients > 0) s->clients--;
@@ -14054,6 +14231,11 @@ static void *client_main(void *arg) {
 
     if (!strcmp(hr.method, "GET") && !strcmp(hr.path, "/v1/models")) {
         send_models(s, fd);
+        http_request_free(&hr);
+        goto done;
+    }
+    if (!strcmp(hr.path, "/v1/tokenize") && !strcmp(hr.method, "POST")) {
+        handle_tokenize(s, fd, hr.body);
         http_request_free(&hr);
         goto done;
     }
@@ -20166,6 +20348,67 @@ static void test_server_image_embedding_cache(void) {
     TEST_ASSERT(cache.bytes == 0);
 }
 
+static void test_tokenize_byte_offsets(void) {
+    /* Offsets are a running sum of the pieces' byte lengths, and the sum has to
+     * land exactly on the text: a byte-level BPE vocabulary reconstructs what it
+     * tokenized, so a mismatch means the offsets point at nothing. */
+    const size_t lens[] = {3, 4, 5};
+    size_t off[3] = {0};
+    TEST_ASSERT(tokenize_byte_offsets(lens, 3, 12, off));
+    TEST_ASSERT(off[0] == 0 && off[1] == 3 && off[2] == 7);
+
+    /* Short by one byte: the offsets are still filled, but "exact" is false so a
+     * caller slicing the text with them is told first. */
+    TEST_ASSERT(!tokenize_byte_offsets(lens, 3, 11, off));
+    TEST_ASSERT(off[2] == 7);
+
+    /* The empty sequence reconstructs the empty text and nothing else. */
+    TEST_ASSERT(tokenize_byte_offsets(lens, 0, 0, off));
+    TEST_ASSERT(!tokenize_byte_offsets(lens, 0, 1, off));
+}
+
+static void test_tokenize_request_parse(void) {
+    tokenize_request req = {0};
+    TEST_ASSERT(tokenize_request_parse("{\"text\":\"hello\"}", &req));
+    TEST_ASSERT(req.text && !strcmp(req.text, "hello"));
+    TEST_ASSERT(!req.got_messages);
+    TEST_ASSERT(req.think_mode == DS4_THINK_HIGH);
+    tokenize_request_free(&req);
+
+    memset(&req, 0, sizeof(req));
+    TEST_ASSERT(tokenize_request_parse(
+        "{\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],"
+        "\"reasoning_effort\":\"max\"}", &req));
+    TEST_ASSERT(req.got_messages);
+    TEST_ASSERT(req.msgs.len == 1);
+    TEST_ASSERT(req.think_mode == DS4_THINK_MAX);
+    tokenize_request_free(&req);
+
+    /* "none" is a think mode, not an absent one: it renders a closed think block
+     * and so tokenizes differently. */
+    memset(&req, 0, sizeof(req));
+    TEST_ASSERT(tokenize_request_parse(
+        "{\"text\":\"x\",\"reasoning_effort\":\"none\"}", &req));
+    TEST_ASSERT(req.think_mode == DS4_THINK_NONE);
+    tokenize_request_free(&req);
+
+    /* Exactly one input. Both, or neither, is a caller error rather than a
+     * silent preference for one of them. */
+    memset(&req, 0, sizeof(req));
+    TEST_ASSERT(!tokenize_request_parse("{}", &req));
+    tokenize_request_free(&req);
+
+    memset(&req, 0, sizeof(req));
+    TEST_ASSERT(!tokenize_request_parse(
+        "{\"text\":\"a\",\"messages\":[{\"role\":\"user\","
+        "\"content\":\"b\"}]}", &req));
+    tokenize_request_free(&req);
+
+    memset(&req, 0, sizeof(req));
+    TEST_ASSERT(!tokenize_request_parse("not json", &req));
+    tokenize_request_free(&req);
+}
+
 static void ds4_server_unit_tests_run(void) {
     test_visible_image_key();
     test_anthropic_tool_image_output();
@@ -20178,6 +20421,8 @@ static void ds4_server_unit_tests_run(void) {
     test_request_defaults_use_min_p_filtering();
     test_chat_ignore_eos_contract();
     test_reasoning_effort_mapping();
+    test_tokenize_byte_offsets();
+    test_tokenize_request_parse();
     test_model_alias_thinking_controls();
     test_api_thinking_controls_parse();
     test_render_think_max_prompt_prefix();
