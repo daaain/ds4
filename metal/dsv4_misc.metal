@@ -441,9 +441,10 @@ struct ds4_metal_args_dsv4_directional_probe {
     uint32_t n_layer;    // stride of the output's layer axis
     uint32_t n_dir;      // directions in the dictionary
     uint32_t n_hc;       // 1 for ffn_out; DS4_N_HC for the mHC stack
-    uint32_t n_point;    // probe points per layer (stride of the point axis)
-    uint32_t point;      // which point this dispatch writes
+    uint32_t n_slot;     // slots per layer (stride of the slot axis)
+    uint32_t slot;       // first slot this dispatch writes; one per mHC stream
     uint32_t n_threads;
+    uint32_t write_norm; // also write ||row|| per slot (from the dir-0 group)
 };
 
 // Directional PROBE: log dot(row, direction) without touching the activations.
@@ -458,11 +459,29 @@ struct ds4_metal_args_dsv4_directional_probe {
 // x, so the kernel is safe to run with steering off, and the caller pays no GPU
 // synchronize: results accumulate in `out` and are read back once per forward
 // pass instead of once per layer.
+//
+// PER-STREAM, NOT THE MEAN.  This used to dot against the mean over the mHC
+// streams and write one number.  The mean is recoverable from the parts and the
+// parts are not recoverable from the mean, and whether the per-layer structure
+// the probe reports is a property of the streams was a standing open question
+// that the averaged form could not answer.  So each stream gets its own slot:
+// slot 0 is ffn_out (n_hc == 1), slots 1..n_hc are the block's streams.  A
+// reader wanting the old quantity averages slots 1..n_hc, which is exactly what
+// this kernel used to do.
+//
+// THE NORM, because a dot alone is uninterpretable.  Raw projections are not
+// comparable across layers -- the residual grows through the trunk -- so every
+// comparison had to be laundered through a standardised difference, and that
+// statistic turned out to have a large null.  ||row|| per slot makes the
+// scale-free quantity, cos = dot / (||row|| * ||dir||), available directly.  It
+// is computed in the same pass that reads the row and written once per slot by
+// the dir == 0 threadgroup, so it costs one extra reduction rather than n_dir.
 kernel void kernel_dsv4_directional_probe_f32(
         constant ds4_metal_args_dsv4_directional_probe & args,
         device const float *x,
         device const float *directions,
         device float *out,
+        device float *norms,
         threadgroup float *scratch [[threadgroup(0)]],
         // Metal requires these builtins to be uniformly scalar or uniformly
         // vector, so the thread index is uint2 to match the 2-D grid.
@@ -474,10 +493,7 @@ kernel void kernel_dsv4_directional_probe_f32(
     if (row >= args.rows || dir >= args.n_dir || args.width == 0) return;
 
     // n_hc == 1 is ffn_out, a plain d_model row.  n_hc > 1 is the mHC stack,
-    // laid out [stream][d_model] within a position; the dot is taken against
-    // the MEAN over streams, matching core.ds4.engine.stream_reduce, because
-    // that is the reduction the fitted lens and every J-Wash reading use.  The
-    // mean commutes with the dot, so it is summed here and scaled once.
+    // laid out [stream][d_model] within a position.
     device const float *xr = x + (uint64_t)row * args.width * args.n_hc;
     // The dictionary is [n_dir][n_layer][width], so one direction's layers are
     // contiguous — the same shape the steering file already uses for its
@@ -485,27 +501,99 @@ kernel void kernel_dsv4_directional_probe_f32(
     device const float *d =
         directions + ((uint64_t)dir * args.n_layer + args.layer) * args.width;
     const uint nth = args.n_threads;
+    const bool want_norm = args.write_norm != 0u && dir == 0u;
 
-    float sum = 0.0f;
     for (uint h = 0; h < args.n_hc; h++) {
         device const float *xh = xr + (uint64_t)h * args.width;
+        float sum = 0.0f;
+        float sq  = 0.0f;
         for (uint i = tid; i < args.width; i += nth) {
-            sum += xh[i] * d[i];
+            const float v = xh[i];
+            sum += v * d[i];
+            if (want_norm) sq += v * v;
         }
-    }
-    scratch[tid] = sum;
-    threadgroup_barrier(mem_flags::mem_threadgroup);
+        scratch[tid] = sum;
+        scratch[nth + tid] = sq;
+        threadgroup_barrier(mem_flags::mem_threadgroup);
 
-    for (uint step = nth >> 1; step > 0; step >>= 1) {
-        if (tid < step) scratch[tid] += scratch[tid + step];
+        for (uint step = nth >> 1; step > 0; step >>= 1) {
+            if (tid < step) {
+                scratch[tid] += scratch[tid + step];
+                scratch[nth + tid] += scratch[nth + tid + step];
+            }
+            threadgroup_barrier(mem_flags::mem_threadgroup);
+        }
+
+        if (tid == 0) {
+            const uint64_t base =
+                ((uint64_t)row * args.n_layer + args.layer) * args.n_slot +
+                (args.slot + h);
+            out[base * args.n_dir + dir] = scratch[0];
+            if (want_norm && norms) norms[base] = sqrt(scratch[nth]);
+        }
+        // The next stream reuses scratch, so no thread may run ahead of the
+        // reduction it is about to overwrite.
         threadgroup_barrier(mem_flags::mem_threadgroup);
     }
+}
 
-    if (tid == 0) {
-        const uint64_t slot =
-            (((uint64_t)row * args.n_layer + args.layer) * args.n_point +
-             args.point) * args.n_dir + dir;
-        out[slot] = scratch[0] / (float)args.n_hc;
+struct ds4_metal_args_dsv4_probe_capture {
+    uint32_t width;      // d_model
+    uint32_t rows;       // token rows in this dispatch
+    uint32_t layer;      // trunk layer being captured
+    uint32_t n_layer;    // stride of the output's layer axis
+    uint32_t n_hc;       // 1 for ffn_out; DS4_N_HC for the mHC stack
+    uint32_t n_slot;     // slots per layer in the destination
+    uint32_t slot;       // first destination slot
+    uint32_t mean_hc;    // 1: write ONE slot, the mean over streams
+};
+
+// Raw residual capture: stage x into a device buffer for one readback per
+// forward pass.
+//
+// WHY A KERNEL AND NOT A BLIT.  A blit could move the bytes without a
+// synchronize, but it cannot reduce, and the quantity every fitted direction and
+// every lens is defined against is the MEAN over the mHC streams.  Capturing
+// four streams to average them on the host would quadruple a stream that is
+// already the largest thing the probe writes.  `mean_hc` makes that a choice
+// rather than a constraint: 0 keeps the streams, 1 collapses them here.
+//
+// The destination is [row][layer][slot][width], which is the layout the probe's
+// projections already use with the direction axis replaced by the full row, so
+// one reader indexes both.
+kernel void kernel_dsv4_probe_capture_f32(
+        constant ds4_metal_args_dsv4_probe_capture & args,
+        device const float *x,
+        device float *out,
+        uint2 gid [[threadgroup_position_in_grid]],
+        uint2 tidv [[thread_position_in_threadgroup]],
+        uint2 tgs [[threads_per_threadgroup]]) {
+    const uint row = gid.x;
+    if (row >= args.rows || args.width == 0) return;
+
+    device const float *xr = x + (uint64_t)row * args.width * args.n_hc;
+    const uint n_out = args.mean_hc != 0u ? 1u : args.n_hc;
+    const uint h0 = gid.y;
+    if (h0 >= n_out) return;
+
+    const uint64_t base =
+        (((uint64_t)row * args.n_layer + args.layer) * args.n_slot +
+         (args.slot + h0)) * args.width;
+
+    if (args.mean_hc != 0u) {
+        const float inv = 1.0f / (float)args.n_hc;
+        for (uint i = tidv.x; i < args.width; i += tgs.x) {
+            float sum = 0.0f;
+            for (uint h = 0; h < args.n_hc; h++) {
+                sum += xr[(uint64_t)h * args.width + i];
+            }
+            out[base + i] = sum * inv;
+        }
+    } else {
+        device const float *xh = xr + (uint64_t)h0 * args.width;
+        for (uint i = tidv.x; i < args.width; i += tgs.x) {
+            out[base + i] = xh[i];
+        }
     }
 }
 

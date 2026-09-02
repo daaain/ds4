@@ -16073,6 +16073,8 @@ typedef struct {
     int directional_probe_init;
     ds4_gpu_tensor *directional_probe_dirs_by_tier[DS4_MAX_GPUS];
     ds4_gpu_tensor *directional_probe_out;
+    ds4_gpu_tensor *directional_probe_norm;
+    ds4_gpu_tensor *directional_probe_raw;
     uint32_t directional_probe_n_dir;
     uint32_t directional_probe_max_rows;
     FILE *directional_probe_log;
@@ -16636,6 +16638,10 @@ static void metal_graph_free(ds4_gpu_graph *g) {
     }
     ds4_gpu_tensor_free(g->directional_probe_out);
     g->directional_probe_out = NULL;
+    ds4_gpu_tensor_free(g->directional_probe_norm);
+    g->directional_probe_norm = NULL;
+    ds4_gpu_tensor_free(g->directional_probe_raw);
+    g->directional_probe_raw = NULL;
     /* Not closed here: the log outlives any single graph (see the fopen). */
     g->directional_probe_log = NULL;
     /* Class H free across all tier slots. Non-head slots are
@@ -17252,9 +17258,12 @@ static void metal_graph_debug_dump_i32_tensor(
  *                          shape as a steering file with n_dir stacked halves.
  *     DS4_DIR_PROBE_LOG    output path.
  *
- * Log format: a 16-byte header ("DSPB", n_layer, n_dir, reserved), then one
+ * Log format: a 20-byte header ("DSPD", n_layer, n_dir, n_slot, flags), then one
  * record per forward pass: {pos0, rows, n_dir} as u32, followed by
- * rows*n_layer*n_dir f32 in [row][layer][dir] order.
+ *   rows*n_layer*n_slot*n_dir f32 projections, [row][layer][slot][dir]
+ *   rows*n_layer*n_slot     f32 norms,       [row][layer][slot]
+ *   rows                    i32 token ids
+ * Slot 0 is ffn_out; slots 1..n_hc are the block output's mHC streams.
  */
 
 static FILE *g_dir_probe_log;
@@ -17270,9 +17279,19 @@ static bool metal_graph_directional_probe_enabled(const ds4_gpu_graph *g) {
  * stream, which is what the unembedding and the fitted lens read.  They are the
  * same basis but not the same quantity, and a direction can be loud in one and
  * quiet in the other, so both are logged rather than one being guessed at. */
-#define DS4_DIR_PROBE_N_POINT 2u
-#define DS4_DIR_PROBE_POINT_FFN_OUT 0u
-#define DS4_DIR_PROBE_POINT_BLOCK 1u
+/* SLOTS, not points.  The block output is the mHC stack and the kernel used to
+ * dot against the MEAN over its streams, writing one number per layer.  The mean
+ * is recoverable from the streams and the streams are not recoverable from the
+ * mean, and whether the probe's per-layer structure is a property of the stream
+ * decomposition was a question the averaged form could not answer.  So slot 0 is
+ * ffn_out and slots 1..DS4_N_HC are the block's streams; a reader wanting the
+ * old quantity averages the latter. */
+#define DS4_DIR_PROBE_N_SLOT (1u + (uint32_t)DS4_N_HC)
+#define DS4_DIR_PROBE_SLOT_FFN_OUT 0u
+#define DS4_DIR_PROBE_SLOT_BLOCK 1u
+/* Kept as the name the call sites use to say which of the two points they are. */
+#define DS4_DIR_PROBE_POINT_FFN_OUT DS4_DIR_PROBE_SLOT_FFN_OUT
+#define DS4_DIR_PROBE_POINT_BLOCK DS4_DIR_PROBE_SLOT_BLOCK
 
 /* Log format.  "DSPB" is the original: a four word header and records of
  * projections only.  "DSPC" adds a fifth header word of flags and, per record,
@@ -17299,8 +17318,102 @@ static bool metal_graph_directional_probe_enabled(const ds4_gpu_graph *g) {
  * exactly. */
 #define DS4_DIR_PROBE_MAGIC_V1 0x42505344u   /* "DSPB" */
 #define DS4_DIR_PROBE_MAGIC_V2 0x43505344u   /* "DSPC" */
+/* "DSPD" adds the norm section and turns the point axis into a slot axis with
+ * one entry per mHC stream.  A new magic again rather than a flag, for the same
+ * reason V2 took one: an old reader must fail on its assert instead of walking
+ * records whose stride it has silently got wrong. */
+#define DS4_DIR_PROBE_MAGIC_V3 0x44505344u   /* "DSPD" */
 #define DS4_DIR_PROBE_FLAG_TOKENS 1u
+#define DS4_DIR_PROBE_FLAG_NORMS 2u
 #define DS4_DIR_PROBE_TOKEN_UNKNOWN (-1)
+
+/* =========================================================================
+ * Raw residual capture.
+ * =========================================================================
+ *
+ * The projections answer questions asked in advance: a direction has to be in
+ * the dictionary before the run to be readable after it.  That turned out to be
+ * the binding constraint -- establishing what an ARBITRARY direction reads on
+ * the same rows needed the whole campaign re-run with random directions stacked
+ * in, and every new hypothesis costs another pass.  Capturing the residual
+ * itself makes those offline questions: any direction, any null, any refit, and
+ * a tuned lens fitted by least squares on (h_l, h_final) pairs, all without the
+ * model.
+ *
+ * IT IS OFF UNLESS DS4_DIR_PROBE_RAW IS SET, and it should stay that way for
+ * ordinary runs: the stream is two orders of magnitude larger than the
+ * projections.  Decode rows only, by default, because a rollout re-prefills its
+ * whole history every turn and the prompt is already recoverable by replay --
+ * the model's OWN tokens are the part that exists nowhere else.
+ *
+ *     DS4_DIR_PROBE_RAW        output path; %t expands as for the probe log.
+ *     DS4_DIR_PROBE_RAW_ROWS   decode (default) | all
+ *     DS4_DIR_PROBE_RAW_SLOTS  block (default, the stream mean) | streams
+ *     DS4_DIR_PROBE_RAW_MAX_ROWS  passes wider than this are skipped (default 512)
+ *
+ * Format: a 24-byte header ("DSRW", n_layer, d_model, n_slot, flags, reserved),
+ * then per pass {pos0, rows, n_slot} u32, rows*n_layer*n_slot*d_model f16, and
+ * rows i32 token ids.  f16 because the residual's dynamic range is nowhere near
+ * needing f32 and the file is the constraint.
+ *
+ * THE WRITE HAPPENS ON ANOTHER THREAD.  Converting and writing tens of MB
+ * inside the decode loop would put disk latency on the critical path, which is
+ * the one thing this design has always refused to do.  The flush hands a buffer
+ * to a writer thread and returns; the queue is bounded and blocks when full, so
+ * a slow disk throttles generation rather than silently dropping records.
+ */
+
+#define DS4_PROBE_RAW_MAGIC 0x57525344u   /* "DSRW" */
+#define DS4_PROBE_RAW_FLAG_TOKENS 1u
+#define DS4_PROBE_RAW_QUEUE 8
+
+typedef struct ds4_probe_raw_block {
+    struct ds4_probe_raw_block *next;
+    uint32_t pos0, rows, n_slot;
+    uint64_t n_half;          /* rows*n_layer*n_slot*d_model */
+    uint16_t *half;
+    int32_t  *ids;
+} ds4_probe_raw_block;
+
+static struct {
+    FILE *fp;
+    pthread_t thread;
+    pthread_mutex_t lock;
+    pthread_cond_t has_work, has_room;
+    ds4_probe_raw_block *head, *tail;
+    int depth, running, started;
+    uint32_t n_slot, max_rows, decode_only, mean_hc;
+    uint64_t written, skipped;
+} g_probe_raw = { .lock = PTHREAD_MUTEX_INITIALIZER,
+                  .has_work = PTHREAD_COND_INITIALIZER,
+                  .has_room = PTHREAD_COND_INITIALIZER };
+
+static void *ds4_probe_raw_writer(void *unused) {
+    (void)unused;
+    for (;;) {
+        pthread_mutex_lock(&g_probe_raw.lock);
+        while (!g_probe_raw.head && g_probe_raw.running)
+            pthread_cond_wait(&g_probe_raw.has_work, &g_probe_raw.lock);
+        ds4_probe_raw_block *b = g_probe_raw.head;
+        if (!b) { pthread_mutex_unlock(&g_probe_raw.lock); break; }
+        g_probe_raw.head = b->next;
+        if (!g_probe_raw.head) g_probe_raw.tail = NULL;
+        g_probe_raw.depth--;
+        pthread_cond_signal(&g_probe_raw.has_room);
+        pthread_mutex_unlock(&g_probe_raw.lock);
+
+        if (g_probe_raw.fp) {
+            const uint32_t rec[3] = { b->pos0, b->rows, b->n_slot };
+            fwrite(rec, sizeof(rec), 1, g_probe_raw.fp);
+            fwrite(b->half, sizeof(uint16_t), (size_t)b->n_half, g_probe_raw.fp);
+            fwrite(b->ids, sizeof(int32_t), b->rows, g_probe_raw.fp);
+            fflush(g_probe_raw.fp);
+            g_probe_raw.written += b->n_half * sizeof(uint16_t);
+        }
+        free(b->half); free(b->ids); free(b);
+    }
+    return NULL;
+}
 
 static void metal_graph_directional_probe_init(ds4_gpu_graph *g) {
     if (!g || g->directional_probe_init) return;
@@ -17354,11 +17467,21 @@ static void metal_graph_directional_probe_init(ds4_gpu_graph *g) {
         return;
     }
 
+    const uint32_t n_slot = DS4_DIR_PROBE_N_SLOT;
     const uint64_t out_bytes = (uint64_t)DS4_DIR_PROBE_MAX_ROWS * n_layers *
-                               DS4_DIR_PROBE_N_POINT * n_dir * sizeof(float);
+                               n_slot * n_dir * sizeof(float);
     g->directional_probe_out = ds4_gpu_tensor_alloc_ptr_on(0, (size_t)out_bytes);
     if (!g->directional_probe_out) {
         fprintf(stderr, "ds4: failed to allocate directional probe output\n");
+        return;
+    }
+    /* One norm per (row, layer, slot) -- it does not depend on the direction,
+     * so this is n_dir times smaller than the projections. */
+    const uint64_t norm_bytes = (uint64_t)DS4_DIR_PROBE_MAX_ROWS * n_layers *
+                                n_slot * sizeof(float);
+    g->directional_probe_norm = ds4_gpu_tensor_alloc_ptr_on(0, (size_t)norm_bytes);
+    if (!g->directional_probe_norm) {
+        fprintf(stderr, "ds4: failed to allocate directional probe norms\n");
         return;
     }
 
@@ -17404,9 +17527,10 @@ static void metal_graph_directional_probe_init(ds4_gpu_graph *g) {
             snprintf(resolved, sizeof(resolved), "%s", log_path);
         }
 
-        const uint32_t header[5] = { DS4_DIR_PROBE_MAGIC_V2, n_layers, n_dir,
-                                     DS4_DIR_PROBE_N_POINT,
-                                     DS4_DIR_PROBE_FLAG_TOKENS };
+        const uint32_t header[5] = { DS4_DIR_PROBE_MAGIC_V3, n_layers, n_dir,
+                                     n_slot,
+                                     DS4_DIR_PROBE_FLAG_TOKENS |
+                                     DS4_DIR_PROBE_FLAG_NORMS };
         struct stat lst;
         const bool existing = stat(resolved, &lst) == 0 && lst.st_size > 0;
         if (existing) {
@@ -17448,6 +17572,81 @@ static void metal_graph_directional_probe_init(ds4_gpu_graph *g) {
     g->directional_probe_max_rows = DS4_DIR_PROBE_MAX_ROWS;
     fprintf(stderr, "ds4: directional probe enabled: %s (%u directions)\n",
             path, n_dir);
+
+    /* Raw residual capture, off unless asked for. Its buffer is sized from
+     * max_rows because a prefill chunk arrives all at once; the default of 512
+     * keeps that allocation at a few hundred MB rather than several GB, and a
+     * wider pass is skipped and counted rather than silently truncated. */
+    const char *raw_path = getenv("DS4_DIR_PROBE_RAW");
+    if (raw_path && raw_path[0] && !g_probe_raw.started) {
+        g_probe_raw.started = 1;
+        const char *rows_env = getenv("DS4_DIR_PROBE_RAW_ROWS");
+        const char *slots_env = getenv("DS4_DIR_PROBE_RAW_SLOTS");
+        const char *max_env = getenv("DS4_DIR_PROBE_RAW_MAX_ROWS");
+        g_probe_raw.decode_only = !(rows_env && strcmp(rows_env, "all") == 0);
+        g_probe_raw.mean_hc = !(slots_env && strcmp(slots_env, "streams") == 0);
+        g_probe_raw.max_rows = max_env && max_env[0]
+                             ? (uint32_t)strtoul(max_env, NULL, 10) : 512u;
+        if (g_probe_raw.max_rows == 0) g_probe_raw.max_rows = 1;
+        g_probe_raw.n_slot = g_probe_raw.mean_hc ? 1u : (uint32_t)DS4_N_HC;
+
+        char rraw[PATH_MAX];
+        const char *rmark = strstr(raw_path, "%t");
+        if (rmark) {
+            char stamp[32];
+            const time_t now = time(NULL);
+            struct tm utc;
+            gmtime_r(&now, &utc);
+            strftime(stamp, sizeof(stamp), "%Y%m%d-%H%M%S", &utc);
+            snprintf(rraw, sizeof(rraw), "%.*s%s%s",
+                     (int)(rmark - raw_path), raw_path, stamp, rmark + 2);
+        } else {
+            snprintf(rraw, sizeof(rraw), "%s", raw_path);
+        }
+
+        const uint64_t raw_bytes = (uint64_t)g_probe_raw.max_rows * n_layers *
+                                   g_probe_raw.n_slot * DS4_N_EMBD * sizeof(float);
+        g->directional_probe_raw = ds4_gpu_tensor_alloc_ptr_on(0, (size_t)raw_bytes);
+        if (!g->directional_probe_raw) {
+            fprintf(stderr, "ds4: failed to allocate %.1f GiB for raw capture; "
+                            "lower DS4_DIR_PROBE_RAW_MAX_ROWS\n",
+                    (double)raw_bytes / (1024.0 * 1024.0 * 1024.0));
+        } else {
+            struct stat rst;
+            const bool rexist = stat(rraw, &rst) == 0 && rst.st_size > 0;
+            g_probe_raw.fp = fopen(rraw, "ab");
+            if (!g_probe_raw.fp) {
+                fprintf(stderr, "ds4: failed to open %s: %s\n", rraw, strerror(errno));
+                ds4_gpu_tensor_free(g->directional_probe_raw);
+                g->directional_probe_raw = NULL;
+            } else {
+                if (!rexist) {
+                    const uint32_t rh[6] = { DS4_PROBE_RAW_MAGIC, n_layers,
+                                             (uint32_t)DS4_N_EMBD,
+                                             g_probe_raw.n_slot,
+                                             DS4_PROBE_RAW_FLAG_TOKENS, 0u };
+                    fwrite(rh, sizeof(rh), 1, g_probe_raw.fp);
+                    fflush(g_probe_raw.fp);
+                }
+                g_probe_raw.running = 1;
+                if (pthread_create(&g_probe_raw.thread, NULL,
+                                   ds4_probe_raw_writer, NULL) != 0) {
+                    fprintf(stderr, "ds4: failed to start raw capture writer\n");
+                    g_probe_raw.running = 0;
+                    fclose(g_probe_raw.fp);
+                    g_probe_raw.fp = NULL;
+                } else {
+                    fprintf(stderr,
+                            "ds4: raw residual capture -> %s (%s rows, %s, "
+                            "max %u rows/pass, %.2f GiB staging)\n",
+                            rraw, g_probe_raw.decode_only ? "decode" : "all",
+                            g_probe_raw.mean_hc ? "stream mean" : "per stream",
+                            g_probe_raw.max_rows,
+                            (double)raw_bytes / (1024.0 * 1024.0 * 1024.0));
+                }
+            }
+        }
+    }
 }
 
 /* Read back one forward pass worth of projections and append them.  The single
@@ -17456,20 +17655,29 @@ static void metal_graph_directional_probe_init(ds4_gpu_graph *g) {
 static bool metal_graph_flush_directional_probe(
         ds4_gpu_graph *g, uint32_t rows, uint32_t pos0, int token) {
     const uint32_t n_layers = directional_steering_layer_count();
-    const uint64_t n = (uint64_t)rows * n_layers * DS4_DIR_PROBE_N_POINT *
+    const uint32_t n_slot = DS4_DIR_PROBE_N_SLOT;
+    const uint64_t n = (uint64_t)rows * n_layers * n_slot *
                        g->directional_probe_n_dir;
+    const uint64_t n_norm = (uint64_t)rows * n_layers * n_slot;
 
     if (ds4_gpu_synchronize() == 0) {
         fprintf(stderr, "ds4: failed to synchronize before reading directional probe\n");
         return false;
     }
+    /* Both reads are memcpy from unified memory behind the SAME synchronize the
+     * projections already paid for, so the norms are effectively free -- the
+     * cost of this design was always the stall, not the bytes. */
     float *buf = xmalloc((size_t)n * sizeof(buf[0]));
+    float *nbuf = xmalloc((size_t)n_norm * sizeof(nbuf[0]));
     bool ok = ds4_gpu_tensor_read(g->directional_probe_out, 0, buf,
-                                  n * sizeof(buf[0])) != 0;
+                                  n * sizeof(buf[0])) != 0 &&
+              ds4_gpu_tensor_read(g->directional_probe_norm, 0, nbuf,
+                                  n_norm * sizeof(nbuf[0])) != 0;
     if (ok && g->directional_probe_log) {
         const uint32_t record[3] = { pos0, rows, g->directional_probe_n_dir };
         fwrite(record, sizeof(record), 1, g->directional_probe_log);
         fwrite(buf, sizeof(buf[0]), (size_t)n, g->directional_probe_log);
+        fwrite(nbuf, sizeof(nbuf[0]), (size_t)n_norm, g->directional_probe_log);
         /* One id per row, always, so a record's shape follows from its header
          * rather than from which path produced it. A decode pass knows its
          * token; a prefill batch does not, and says so. */
@@ -17482,6 +17690,46 @@ static bool metal_graph_flush_directional_probe(
          * and a half-written record is indistinguishable from a short run. */
         fflush(g->directional_probe_log);
     }
+    /* Hand the raw rows to the writer. The conversion to f16 happens here,
+     * on the thread that already owns the buffer, because it halves what the
+     * queue carries; the disk write happens on the other thread, because that
+     * is the part with unbounded latency. */
+    if (ok && g->directional_probe_raw && g_probe_raw.running &&
+        rows <= g_probe_raw.max_rows &&
+        (!g_probe_raw.decode_only || rows == 1)) {
+        const uint64_t n_raw = (uint64_t)rows * n_layers * g_probe_raw.n_slot *
+                               (uint64_t)DS4_N_EMBD;
+        float *rf = xmalloc((size_t)n_raw * sizeof(rf[0]));
+        if (ds4_gpu_tensor_read(g->directional_probe_raw, 0, rf,
+                                n_raw * sizeof(rf[0])) != 0) {
+            ds4_probe_raw_block *b = xmalloc(sizeof(*b));
+            b->next = NULL;
+            b->pos0 = pos0; b->rows = rows; b->n_slot = g_probe_raw.n_slot;
+            b->n_half = n_raw;
+            b->half = xmalloc((size_t)n_raw * sizeof(uint16_t));
+            for (uint64_t i = 0; i < n_raw; i++) b->half[i] = f32_to_f16(rf[i]);
+            b->ids = xmalloc((size_t)rows * sizeof(int32_t));
+            for (uint32_t i = 0; i < rows; i++) {
+                b->ids[i] = (rows == 1) ? (int32_t)token
+                                        : (int32_t)DS4_DIR_PROBE_TOKEN_UNKNOWN;
+            }
+            pthread_mutex_lock(&g_probe_raw.lock);
+            /* Bounded queue: a slow disk throttles generation rather than
+             * growing memory without limit or dropping records unrecorded. */
+            while (g_probe_raw.depth >= DS4_PROBE_RAW_QUEUE && g_probe_raw.running)
+                pthread_cond_wait(&g_probe_raw.has_room, &g_probe_raw.lock);
+            if (g_probe_raw.tail) g_probe_raw.tail->next = b;
+            else g_probe_raw.head = b;
+            g_probe_raw.tail = b;
+            g_probe_raw.depth++;
+            pthread_cond_signal(&g_probe_raw.has_work);
+            pthread_mutex_unlock(&g_probe_raw.lock);
+        } else {
+            g_probe_raw.skipped++;
+        }
+        free(rf);
+    }
+    free(nbuf);
     free(buf);
     if (ds4_gpu_begin_commands() == 0) {
         fprintf(stderr, "ds4: failed to resume Metal command batch after directional probe\n");
@@ -17508,10 +17756,23 @@ static bool metal_graph_apply_directional_probe(
     if (!ds4_gpu_directional_probe_tensor(x,
                                           metal_graph_directional_probe_dirs(g),
                                           g->directional_probe_out,
+                                          g->directional_probe_norm,
                                           il, n_layers, g->directional_probe_n_dir,
                                           DS4_N_EMBD, rows, n_hc,
-                                          DS4_DIR_PROBE_N_POINT, point)) {
+                                          DS4_DIR_PROBE_N_SLOT, point)) {
         return false;
+    }
+    /* Raw capture rides on the block point only: ffn_out is this layer's write
+     * and the residual is what a lens and a refit are defined on. */
+    if (g->directional_probe_raw && point == DS4_DIR_PROBE_POINT_BLOCK &&
+        rows <= g_probe_raw.max_rows &&
+        (!g_probe_raw.decode_only || rows == 1)) {
+        if (!ds4_gpu_probe_capture_tensor(x, g->directional_probe_raw, il,
+                                          n_layers, DS4_N_EMBD, rows, n_hc,
+                                          g_probe_raw.n_slot, 0,
+                                          (int)g_probe_raw.mean_hc)) {
+            return false;
+        }
     }
     /* Flush on the LAST point of the LAST layer: by then every slot of this
      * forward pass has been written, and the block output is the last thing

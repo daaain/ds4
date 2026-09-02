@@ -2434,23 +2434,56 @@ int ds4_gpu_directional_steering_project_tensor(
         uint32_t                rows,
         float                   scale);
 
-/* out[(row * n_layer + layer) * n_dir + dir] = dot(x[row], directions[dir][layer]).
+/* out[((row * n_layer + layer) * n_slot + slot + h) * n_dir + dir]
+ *     = dot(x[row][stream h], directions[dir][layer])
+ * and, when `norms` is non-NULL, norms[(row * n_layer + layer) * n_slot + slot + h]
+ *     = ||x[row][stream h]||.
+ *
  * Read-only on x: this is the projection the steering kernel computes, logged
  * instead of applied, so a probe and a steer necessarily agree.  `directions`
  * is [n_dir][n_layer][width].  Results accumulate in `out` for readback once
- * per forward pass, so no GPU synchronize happens per layer. */
+ * per forward pass, so no GPU synchronize happens per layer.
+ *
+ * ONE SLOT PER mHC STREAM.  `slot` is the first slot this dispatch writes and
+ * n_hc consecutive slots are filled, so ffn_out (n_hc == 1) occupies slot 0 and
+ * the block output occupies slots 1..n_hc.  Averaging the block's slots
+ * recovers the single number this used to write; the reverse is not possible,
+ * which is why the parts are kept.
+ *
+ * The norm is what makes a projection interpretable: raw dots are not
+ * comparable across layers because the residual grows through the trunk, and
+ * cos = dot / (||x|| * ||dir||) is.  It is reduced in the same pass that reads
+ * the row and written by the dir == 0 threadgroup only, so it costs one extra
+ * reduction rather than n_dir of them.  Pass NULL to skip it. */
 int ds4_gpu_directional_probe_tensor(
         const ds4_gpu_tensor *x,
         const ds4_gpu_tensor *directions,
         ds4_gpu_tensor       *out,
+        ds4_gpu_tensor       *norms,
         uint32_t                layer,
         uint32_t                n_layer,
         uint32_t                n_dir,
         uint32_t                width,
         uint32_t                rows,
         uint32_t                n_hc,
-        uint32_t                n_point,
-        uint32_t                point);
+        uint32_t                n_slot,
+        uint32_t                slot);
+
+/* Stage x into out[row][layer][slot..][width] for one readback per forward
+ * pass.  With mean_hc, the mHC streams are averaged into a single slot -- the
+ * quantity every fitted direction is defined against -- otherwise each stream
+ * gets its own.  No synchronize: the copy is a graph command like any other. */
+int ds4_gpu_probe_capture_tensor(
+        const ds4_gpu_tensor *x,
+        ds4_gpu_tensor       *out,
+        uint32_t                layer,
+        uint32_t                n_layer,
+        uint32_t                width,
+        uint32_t                rows,
+        uint32_t                n_hc,
+        uint32_t                n_slot,
+        uint32_t                slot,
+        int                     mean_hc);
 
 int ds4_gpu_router_select_tensor(
         ds4_gpu_tensor       *selected,
