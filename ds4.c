@@ -17274,6 +17274,34 @@ static bool metal_graph_directional_probe_enabled(const ds4_gpu_graph *g) {
 #define DS4_DIR_PROBE_POINT_FFN_OUT 0u
 #define DS4_DIR_PROBE_POINT_BLOCK 1u
 
+/* Log format.  "DSPB" is the original: a four word header and records of
+ * projections only.  "DSPC" adds a fifth header word of flags and, per record,
+ * one int32 token id per row after the floats.
+ *
+ * WHY A NEW MAGIC RATHER THAN A FLAG IN THE OLD HEADER.  The fourth word is
+ * already n_point, so there is nowhere to put a flag that an old reader would
+ * ignore.  Changing the magic makes an old reader fail on the assert it already
+ * has instead of misparsing the trailer as the next record's header -- which
+ * would not error, it would silently return wrong projections.
+ *
+ * The ids are what the probe was missing.  A row said WHERE in the sequence it
+ * came from and nothing about WHAT was there, so a generated token could not be
+ * tied to its text; /v1/tokenize answers that for a prompt, but a model's own
+ * output is in no prompt.
+ *
+ * The id is the token AT the row's position.  Prefill already consumed the
+ * prompt, so in practice decode row i carries generated token i -- verified by
+ * generating "One, two, three." and finding the six decode rows hold exactly the
+ * six ids /v1/tokenize gives for that string.
+ *
+ * Prefill rows log -1: the batched path has no token array in scope, and
+ * threading one down is a wide change for something /v1/tokenize already answers
+ * exactly. */
+#define DS4_DIR_PROBE_MAGIC_V1 0x42505344u   /* "DSPB" */
+#define DS4_DIR_PROBE_MAGIC_V2 0x43505344u   /* "DSPC" */
+#define DS4_DIR_PROBE_FLAG_TOKENS 1u
+#define DS4_DIR_PROBE_TOKEN_UNKNOWN (-1)
+
 static void metal_graph_directional_probe_init(ds4_gpu_graph *g) {
     if (!g || g->directional_probe_init) return;
     g->directional_probe_init = 1;
@@ -17343,8 +17371,9 @@ static void metal_graph_directional_probe_init(ds4_gpu_graph *g) {
             fprintf(stderr, "ds4: failed to open %s: %s\n", log_path, strerror(errno));
             return;
         }
-        const uint32_t header[4] = { 0x42505344u /* "DSPB" */, n_layers, n_dir,
-                                     DS4_DIR_PROBE_N_POINT };
+        const uint32_t header[5] = { DS4_DIR_PROBE_MAGIC_V2, n_layers, n_dir,
+                                     DS4_DIR_PROBE_N_POINT,
+                                     DS4_DIR_PROBE_FLAG_TOKENS };
         fwrite(header, sizeof(header), 1, g_dir_probe_log);
     }
     g->directional_probe_log = g_dir_probe_log;
@@ -17359,7 +17388,7 @@ static void metal_graph_directional_probe_init(ds4_gpu_graph *g) {
  * synchronize this costs is the whole point of the design; it is taken after
  * the last trunk layer, where the graph would shortly stall anyway. */
 static bool metal_graph_flush_directional_probe(
-        ds4_gpu_graph *g, uint32_t rows, uint32_t pos0) {
+        ds4_gpu_graph *g, uint32_t rows, uint32_t pos0, int token) {
     const uint32_t n_layers = directional_steering_layer_count();
     const uint64_t n = (uint64_t)rows * n_layers * DS4_DIR_PROBE_N_POINT *
                        g->directional_probe_n_dir;
@@ -17373,9 +17402,16 @@ static bool metal_graph_flush_directional_probe(
                                   n * sizeof(buf[0])) != 0;
     if (ok && g->directional_probe_log) {
         const uint32_t record[3] = { pos0, rows, g->directional_probe_n_dir };
-        (void)0;
         fwrite(record, sizeof(record), 1, g->directional_probe_log);
         fwrite(buf, sizeof(buf[0]), (size_t)n, g->directional_probe_log);
+        /* One id per row, always, so a record's shape follows from its header
+         * rather than from which path produced it. A decode pass knows its
+         * token; a prefill batch does not, and says so. */
+        for (uint32_t i = 0; i < rows; i++) {
+            const int32_t id = (rows == 1) ? (int32_t)token
+                                           : (int32_t)DS4_DIR_PROBE_TOKEN_UNKNOWN;
+            fwrite(&id, sizeof(id), 1, g->directional_probe_log);
+        }
         /* Flush per record: a probe log is read while the run is still going,
          * and a half-written record is indistinguishable from a short run. */
         fflush(g->directional_probe_log);
@@ -17395,7 +17431,8 @@ static bool metal_graph_apply_directional_probe(
         uint32_t                rows,
         uint32_t                pos0,
         uint32_t                n_hc,
-        uint32_t                point) {
+        uint32_t                point,
+        int                     token) {
     if (!metal_graph_directional_probe_enabled(g)) return true;
     const uint32_t n_layers = directional_steering_layer_count();
     /* The MTP layer runs past the trunk and no direction covers it. */
@@ -17414,7 +17451,7 @@ static bool metal_graph_apply_directional_probe(
      * forward pass has been written, and the block output is the last thing
      * the trunk produces. */
     if (point == DS4_DIR_PROBE_POINT_BLOCK && il + 1u == n_layers) {
-        return metal_graph_flush_directional_probe(g, rows, pos0);
+        return metal_graph_flush_directional_probe(g, rows, pos0, token);
     }
     return true;
 }
@@ -25749,7 +25786,7 @@ static bool metal_graph_encode_decode_layer_phase(
         }
         if (ok && metal_graph_directional_probe_enabled(g)) {
             ok = metal_graph_apply_directional_probe(g, metal_graph_ffn_out(g), il, 1, pos,
-                                                 1u, DS4_DIR_PROBE_POINT_FFN_OUT);
+                                                 1u, DS4_DIR_PROBE_POINT_FFN_OUT, token);
         }
         if (ok && metal_graph_directional_steering_ffn_enabled(g)) {
             ok = metal_graph_apply_directional_steering_ffn(g, metal_graph_ffn_out(g), il, 1);
@@ -25776,7 +25813,7 @@ static bool metal_graph_encode_decode_layer_phase(
             metal_graph_debug_dump_tensor("hc_ffn_post", metal_graph_after_ffn_hc(g), hc_dim, il, pos);
             if (ok) ok = metal_graph_apply_directional_probe(
                     g, metal_graph_after_ffn_hc(g), il, 1, pos,
-                    DS4_N_HC, DS4_DIR_PROBE_POINT_BLOCK);
+                    DS4_N_HC, DS4_DIR_PROBE_POINT_BLOCK, token);
         }
         return ok;
     }
@@ -25954,7 +25991,7 @@ static bool metal_graph_encode_decode_layer_phase(
         }
         if (ok && metal_graph_directional_probe_enabled(g)) {
             ok = metal_graph_apply_directional_probe(g, metal_graph_ffn_out(g), il, 1, pos,
-                                                 1u, DS4_DIR_PROBE_POINT_FFN_OUT);
+                                                 1u, DS4_DIR_PROBE_POINT_FFN_OUT, token);
         }
         if (ok && metal_graph_directional_steering_ffn_enabled(g)) {
             ok = metal_graph_apply_directional_steering_ffn(g, metal_graph_ffn_out(g), il, 1);
@@ -25981,7 +26018,7 @@ static bool metal_graph_encode_decode_layer_phase(
             metal_graph_debug_dump_tensor("hc_ffn_post", metal_graph_after_ffn_hc(g), hc_dim, il, pos);
             if (ok) ok = metal_graph_apply_directional_probe(
                     g, metal_graph_after_ffn_hc(g), il, 1, pos,
-                    DS4_N_HC, DS4_DIR_PROBE_POINT_BLOCK);
+                    DS4_N_HC, DS4_DIR_PROBE_POINT_BLOCK, token);
         }
         return ok;
     }
@@ -26463,7 +26500,7 @@ static bool metal_graph_encode_decode_layer_phase(
     }
     if (ok && metal_graph_directional_probe_enabled(g)) {
         ok = metal_graph_apply_directional_probe(g, metal_graph_ffn_out(g), il, 1, pos,
-                                                 1u, DS4_DIR_PROBE_POINT_FFN_OUT);
+                                                 1u, DS4_DIR_PROBE_POINT_FFN_OUT, token);
     }
     if (ok && metal_graph_directional_steering_ffn_enabled(g)) {
         ok = metal_graph_apply_directional_steering_ffn(g, metal_graph_ffn_out(g), il, 1);
@@ -26499,7 +26536,7 @@ static bool metal_graph_encode_decode_layer_phase(
         metal_graph_debug_dump_tensor("hc_ffn_post", metal_graph_after_ffn_hc(g), hc_dim, il, pos);
         if (ok) ok = metal_graph_apply_directional_probe(
                 g, metal_graph_after_ffn_hc(g), il, 1, pos,
-                DS4_N_HC, DS4_DIR_PROBE_POINT_BLOCK);
+                DS4_N_HC, DS4_DIR_PROBE_POINT_BLOCK, token);
     }
     return ok;
 }
@@ -32147,7 +32184,8 @@ static bool metal_graph_encode_layer_ffn_batch(
     }
     if (ok && metal_graph_directional_probe_enabled(g)) {
         ok = metal_graph_apply_directional_probe(g, metal_graph_batch_ffn_out(g), il, n_tokens, pos0,
-                                                 1u, DS4_DIR_PROBE_POINT_FFN_OUT);
+                                                 1u, DS4_DIR_PROBE_POINT_FFN_OUT,
+                                                 DS4_DIR_PROBE_TOKEN_UNKNOWN);
     }
     if (ok && metal_graph_directional_steering_ffn_enabled(g)) {
         ok = metal_graph_apply_directional_steering_ffn(g, metal_graph_batch_ffn_out(g), il, n_tokens);
@@ -32193,7 +32231,8 @@ static bool metal_graph_encode_layer_ffn_batch(
                                       (uint64_t)n_tokens * hc_dim, il, pos0);
         if (ok) ok = metal_graph_apply_directional_probe(
                 g, metal_graph_batch_next_hc(g), il, n_tokens, pos0,
-                DS4_N_HC, DS4_DIR_PROBE_POINT_BLOCK);
+                DS4_N_HC, DS4_DIR_PROBE_POINT_BLOCK,
+                DS4_DIR_PROBE_TOKEN_UNKNOWN);
     }
     DS4_METAL_PROFILE_FFN_STAGE("hc_post");
     ds4_gpu_tensor_free(tp_ffn_x);
