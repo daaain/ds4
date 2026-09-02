@@ -17364,24 +17364,90 @@ static void metal_graph_directional_probe_init(ds4_gpu_graph *g) {
 
     /* Process-level, NOT per-graph: ds4 rebuilds the graph per session, and a
      * per-graph fopen("wb") silently truncated the log every time a new one
-     * came up -- leaving only the final session's projections behind. */
+     * came up -- leaving only the final session's projections behind.
+     *
+     * IT ALSO TRUNCATED ACROSS SERVER RESTARTS, which cost a morning's probe
+     * output on 2 September 2026.  Every analysis manifest records BYTE RANGES
+     * into a particular log, and those ranges are only meaningful for as long
+     * as the bytes they point at survive; restarting on the same path silently
+     * destroyed the data every existing manifest referred to.  Two changes fix
+     * that, and the log is now append-only:
+     *
+     *   %t in the path expands to a UTC timestamp, so a run can ask for a log
+     *   nothing else is using without the operator inventing a name.
+     *
+     *   Without %t the log is APPENDED to, never truncated, so old byte ranges
+     *   stay valid and new records land after them.  Appending is what makes
+     *   this safe under kill -9 as well -- there is no shutdown step to miss.
+     *
+     * An existing log is only appended to when its header matches the current
+     * configuration.  A probe file with a different number of directions
+     * produces records of a different stride, and appending those behind an old
+     * header would not error anywhere -- it would silently return projections
+     * for the wrong direction. */
     if (!g_dir_probe_log) {
-        g_dir_probe_log = fopen(log_path, "wb");
-        if (!g_dir_probe_log) {
-            fprintf(stderr, "ds4: failed to open %s: %s\n", log_path, strerror(errno));
-            return;
+        char resolved[PATH_MAX];
+        const char *mark = strstr(log_path, "%t");
+        if (mark) {
+            char stamp[32];
+            const time_t now = time(NULL);
+            struct tm utc;
+            gmtime_r(&now, &utc);
+            strftime(stamp, sizeof(stamp), "%Y%m%d-%H%M%S", &utc);
+            const int head = (int)(mark - log_path);
+            if (snprintf(resolved, sizeof(resolved), "%.*s%s%s", head, log_path,
+                         stamp, mark + 2) >= (int)sizeof(resolved)) {
+                fprintf(stderr, "ds4: probe log path too long after expanding %%t\n");
+                return;
+            }
+        } else {
+            snprintf(resolved, sizeof(resolved), "%s", log_path);
         }
+
         const uint32_t header[5] = { DS4_DIR_PROBE_MAGIC_V2, n_layers, n_dir,
                                      DS4_DIR_PROBE_N_POINT,
                                      DS4_DIR_PROBE_FLAG_TOKENS };
-        fwrite(header, sizeof(header), 1, g_dir_probe_log);
+        struct stat lst;
+        const bool existing = stat(resolved, &lst) == 0 && lst.st_size > 0;
+        if (existing) {
+            uint32_t have[5] = { 0 };
+            FILE *probe = fopen(resolved, "rb");
+            const bool read_ok = probe && fread(have, sizeof(have), 1, probe) == 1;
+            if (probe) fclose(probe);
+            if (!read_ok || memcmp(have, header, sizeof(header)) != 0) {
+                fprintf(stderr,
+                        "ds4: %s already exists with a different probe header. "
+                        "want magic %#x, %u layers, %u dirs, %u points, flags %u; "
+                        "found magic %#x, %u layers, %u dirs, %u points, flags %u. "
+                        "Refusing to append -- records of a different stride behind "
+                        "this header would be misread, not rejected. Point "
+                        "DS4_DIR_PROBE_LOG somewhere else, or use %%t.\n",
+                        resolved, header[0], header[1], header[2], header[3], header[4],
+                        have[0], have[1], have[2], have[3], have[4]);
+                return;
+            }
+        }
+
+        g_dir_probe_log = fopen(resolved, "ab");
+        if (!g_dir_probe_log) {
+            fprintf(stderr, "ds4: failed to open %s: %s\n", resolved, strerror(errno));
+            return;
+        }
+        if (!existing) fwrite(header, sizeof(header), 1, g_dir_probe_log);
+        fflush(g_dir_probe_log);
+        /* The offset this session's records start at. A campaign script wants
+         * it to bound its own manifest ranges inside a log that already holds
+         * somebody else's. */
+        fprintf(stderr, "ds4: directional probe log: %s (%s at byte %lld)\n",
+                resolved, existing ? "appending" : "created",
+                (long long)(existing ? lst.st_size : (off_t)sizeof(header)));
     }
     g->directional_probe_log = g_dir_probe_log;
 
     g->directional_probe_n_dir = n_dir;
     g->directional_probe_max_rows = DS4_DIR_PROBE_MAX_ROWS;
-    fprintf(stderr, "ds4: directional probe enabled: %s (%u directions) -> %s\n",
-            path, n_dir, log_path);
+    fprintf(stderr, "ds4: directional probe enabled: %s (%u directions)\n",
+            path, n_dir);
 }
 
 /* Read back one forward pass worth of projections and append them.  The single
