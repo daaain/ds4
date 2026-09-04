@@ -163,7 +163,14 @@ static void print_model_runtime(FILE *fp, const help_colors *c,
     }
 #endif
     if (tool != DS4_HELP_BENCH) {
-        opt(fp, c, "-c, --ctx N", "Allocated context tokens.");
+        /* The default differs per tool, and the number is the whole reason to
+           reach for this flag, so name the one that applies. ds4-eval sizes its
+           context from the workload instead and has no fixed default to quote. */
+        opt(fp, c, "-c, --ctx N",
+            tool == DS4_HELP_SERVER ? "Allocated context tokens. Default: 200000."
+            : tool == DS4_HELP_AGENT ? "Allocated context tokens. Default: 100000."
+            : tool == DS4_HELP_DS4   ? "Allocated context tokens. Default: 32768."
+                                     : "Allocated context tokens.");
     }
     if (tool == DS4_HELP_SERVER) {
         opt(fp, c, "-n, --tokens N", "Default max output tokens when clients omit a limit.");
