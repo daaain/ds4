@@ -15130,7 +15130,18 @@ static server_config parse_options(int argc, char **argv) {
         },
         .host = "127.0.0.1",
         .port = 8000,
-        .ctx_size = 32768,
+        /* Generous by default. An agentic client's context is not its prompt: a
+           reasoning turn that runs to its token cap without emitting a tool call
+           is carried back into the next request by harnesses that replay
+           reasoning, so one such turn can cost tens of thousands of tokens that
+           are never given back. At 32768 that ended runs with a 400 after two
+           turns, and the failure reads as the model refusing to finish rather
+           than as an allocation. Budgets belong to the caller -- a client that
+           wants a shorter run sets max_tokens or its own step limit -- so the
+           server's job is to not be the first thing that stops one. The cost is
+           context buffers only, about 3.5 GiB per resident session on Metal at
+           this size; --ctx lowers it where that matters. */
+        .ctx_size = 200000,
         .default_tokens = 393216,
         .tool_memory_max_ids = DS4_TOOL_MEMORY_DEFAULT_MAX_IDS,
         .mixed_prefill_quantum = 128,
