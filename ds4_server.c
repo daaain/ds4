@@ -14466,6 +14466,84 @@ static bool handle_tokenize(server *s, int fd, const char *body) {
     return ok;
 }
 
+/* POST /v1/expert_profile  {"path": "...", "reset": true}
+ *
+ * Takes a routing profile without tearing the engine down.  ds4.c only wrote
+ * one at ds4_engine_close(), which for a server means one profile per process
+ * covering every rollout it ever served -- useless for attributing routing to
+ * the run that caused it.  The alternative was a server lifetime per rollout,
+ * paying a model load each time to get a clean boundary.
+ *
+ * Both fields are optional: no path uses the configured DS4_EXPERT_PROFILE
+ * output, and reset defaults to TRUE because the whole point is a per-run
+ * profile.  An empty body is a valid request meaning "both defaults".
+ */
+static bool handle_flush_expert_profile(server *s, int fd, const char *body) {
+    char *path = NULL;
+    bool reset = true;
+
+    const char *p = body ? body : "";
+    json_ws(&p);
+    if (*p == '{') {
+        p++;
+        json_ws(&p);
+        while (*p && *p != '}') {
+            char *key = NULL;
+            if (!json_string(&p, &key)) goto bad;
+            json_ws(&p);
+            if (*p != ':') { free(key); goto bad; }
+            p++;
+            bool ok = true;
+            if (!strcmp(key, "path")) {
+                free(path);
+                ok = json_string(&p, &path);
+            } else if (!strcmp(key, "reset")) {
+                ok = json_bool(&p, &reset);
+            } else {
+                ok = json_skip_value(&p);
+            }
+            free(key);
+            if (!ok) goto bad;
+            json_ws(&p);
+            if (*p == ',') { p++; json_ws(&p); }
+        }
+    }
+
+    /* ds4_expert_profile_record() runs on the inference path with no lock of
+     * its own -- putting a mutex in a per-token per-layer hot path to serve a
+     * diagnostic would be the wrong trade.  Serialising here instead means a
+     * flush cannot interleave with a forward pass, which would both tear the
+     * counts and describe half a generation. */
+    pthread_mutex_lock(&s->inference_mu);
+    const int rc = ds4_expert_profile_flush(path, reset);
+    pthread_mutex_unlock(&s->inference_mu);
+    free(path);
+
+    if (rc == -1) {
+        http_error(fd, s->enable_cors, 409,
+                   "no expert profiler active; restart with DS4_EXPERT_PROFILE set");
+        return false;
+    }
+    if (rc == -2) {
+        http_error(fd, s->enable_cors, 400,
+                   "no output path: pass \"path\" or set DS4_EXPERT_PROFILE");
+        return false;
+    }
+    if (rc != 0) {
+        http_error(fd, s->enable_cors, 500,
+                   "could not write expert profile; see the server log");
+        return false;
+    }
+    return http_response(fd, s->enable_cors, 200, "application/json",
+                         reset ? "{\"ok\":true,\"reset\":true}\n"
+                               : "{\"ok\":true,\"reset\":false}\n");
+
+bad:
+    free(path);
+    http_error(fd, s->enable_cors, 400, "malformed expert profile request");
+    return false;
+}
+
 static void client_done(server *s) {
     pthread_mutex_lock(&s->mu);
     if (s->clients > 0) s->clients--;
@@ -14599,6 +14677,11 @@ static void *client_main(void *arg) {
     }
     if (!strcmp(hr.path, "/v1/tokenize") && !strcmp(hr.method, "POST")) {
         handle_tokenize(s, fd, hr.body);
+        http_request_free(&hr);
+        goto done;
+    }
+    if (!strcmp(hr.path, "/v1/expert_profile") && !strcmp(hr.method, "POST")) {
+        handle_flush_expert_profile(s, fd, hr.body);
         http_request_free(&hr);
         goto done;
     }

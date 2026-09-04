@@ -1680,64 +1680,134 @@ static void ds4_expert_profile_write_hotlist_file(ds4_expert_profile *p) {
     }
 }
 
+/* Write the profile exactly as it stands to `path`.
+ *
+ * Lifted verbatim out of ds4_expert_profile_close() on 4 September so that a
+ * profile can be taken WITHOUT tearing the engine down. The profiler was
+ * written for cache-sizing, where one dump per process is the natural unit;
+ * read as a science instrument it is cumulative over the process, so a
+ * long-running server mixes every rollout into one histogram and nothing can
+ * be attributed to the run that produced it. The alternative was one server
+ * lifetime per rollout, which costs a model load each time and throws away the
+ * warm process for no scientific gain.
+ */
+static bool ds4_expert_profile_write_json(ds4_expert_profile *p, const char *path) {
+    if (!path || !path[0]) return false;
+
+    FILE *fp = fopen(path, "wb");
+    if (!fp) {
+        fprintf(stderr,
+                "ds4: failed to open expert profile output %s: %s\n",
+                path,
+                strerror(errno));
+        return false;
+    } else {
+
+        fputs("{\n", fp);
+        fputs("  \"source\": \"ds4 Metal expert locality profile\",\n", fp);
+        fputs("  \"model\": ", fp);
+        ds4_json_write_string(fp, p->model_name);
+        fputs(",\n", fp);
+        fprintf(fp,
+                "  \"layers\": %u,\n"
+                "  \"experts\": %u,\n"
+                "  \"expert_used\": %u,\n"
+                "  \"layer_records\": %" PRIu64 ",\n"
+                "  \"selections\": %" PRIu64 ",\n",
+                p->n_layer,
+                p->n_expert,
+                p->n_expert_used,
+                p->total_records,
+                p->total_selections);
+        fputs("  \"cache_ns\": [", fp);
+        for (uint32_t ci = 0; ci < p->n_caps; ci++) {
+            if (ci) fputc(',', fp);
+            fprintf(fp, "%u", p->caps[ci]);
+        }
+        fputs("],\n", fp);
+        ds4_expert_profile_write_cache_summary(fp);
+        fputs("  \"layers_detail\": [\n", fp);
+        for (uint32_t il = 0; il < p->n_layer; il++) {
+            ds4_expert_profile_write_layer(fp, il);
+            fputs(il + 1u == p->n_layer ? "\n" : ",\n", fp);
+        }
+        fputs("  ]\n}\n", fp);
+
+        if (fclose(fp) != 0) {
+            fprintf(stderr,
+                    "ds4: failed to close expert profile output %s: %s\n",
+                    path,
+                    strerror(errno));
+            return false;
+        } else {
+            fprintf(stderr,
+                    "ds4: wrote Metal expert locality profile to %s "
+                    "(%" PRIu64 " layer records, %" PRIu64 " selections)\n",
+                    path,
+                    p->total_records,
+                    p->total_selections);
+        }
+    }
+    return true;
+}
+
+/* Zero the accumulators, keep the configuration.
+ *
+ * Everything above `layer_is_hash` in the struct is a per-run count; the shape,
+ * paths, cap ladder and model name are properties of the process and must
+ * survive. cache_entries is an LRU list guarded by cache_count, so zeroing the
+ * count is what empties it -- the stale ids below it are never read.
+ *
+ * layer_is_hash is deliberately KEPT: it records that a layer routes by hash
+ * rather than by a learned router, which is a fact about the model and not
+ * about the run, and it is only ever set true by a record.
+ */
+static void ds4_expert_profile_reset_counts(ds4_expert_profile *p) {
+    memset(p->layer_records, 0, sizeof(p->layer_records));
+    memset(p->hist, 0, sizeof(p->hist));
+    memset(p->weight_hist, 0, sizeof(p->weight_hist));
+    memset(p->cache_hits, 0, sizeof(p->cache_hits));
+    memset(p->cache_weight_hits, 0, sizeof(p->cache_weight_hits));
+    memset(p->cache_entries, 0, sizeof(p->cache_entries));
+    memset(p->cache_count, 0, sizeof(p->cache_count));
+    memset(p->prev_valid, 0, sizeof(p->prev_valid));
+    memset(p->prev_pos, 0, sizeof(p->prev_pos));
+    memset(p->prev_selected, 0, sizeof(p->prev_selected));
+    memset(p->adjacent_pairs, 0, sizeof(p->adjacent_pairs));
+    memset(p->adjacent_overlap_sum, 0, sizeof(p->adjacent_overlap_sum));
+    memset(p->adjacent_jaccard_sum, 0, sizeof(p->adjacent_jaccard_sum));
+    p->total_records = 0;
+    p->total_selections = 0;
+    p->total_weight = 0.0;
+}
+
+/* Dump the profile mid-process, and optionally start a fresh one.
+ *
+ * NOT THREAD SAFE, deliberately. ds4_expert_profile_record() runs on the
+ * inference path with no lock, and adding one there would put a mutex in a
+ * per-token per-layer hot path to serve a diagnostic. Call this only while the
+ * engine is idle -- between rollouts, which is the only time the answer means
+ * anything anyway, since a profile taken mid-generation describes half a run.
+ *
+ * Returns 0 on success, -1 if no profiler is active (the server was started
+ * without DS4_EXPERT_PROFILE), -2 if no output path is known, -3 on write
+ * failure.
+ */
+int ds4_expert_profile_flush(const char *path, bool reset) {
+    ds4_expert_profile *p = &g_expert_profile;
+    if (!p->active) return -1;
+    const char *out = (path && path[0]) ? path : p->path;
+    if (!out || !out[0]) return -2;
+    if (!ds4_expert_profile_write_json(p, out)) return -3;
+    if (reset) ds4_expert_profile_reset_counts(p);
+    return 0;
+}
+
 static void ds4_expert_profile_close(void) {
     ds4_expert_profile *p = &g_expert_profile;
     if (!p->active) return;
 
-    if (p->path) {
-        FILE *fp = fopen(p->path, "wb");
-        if (!fp) {
-            fprintf(stderr,
-                    "ds4: failed to open expert profile output %s: %s\n",
-                    p->path,
-                    strerror(errno));
-        } else {
-
-            fputs("{\n", fp);
-            fputs("  \"source\": \"ds4 Metal expert locality profile\",\n", fp);
-            fputs("  \"model\": ", fp);
-            ds4_json_write_string(fp, p->model_name);
-            fputs(",\n", fp);
-            fprintf(fp,
-                    "  \"layers\": %u,\n"
-                    "  \"experts\": %u,\n"
-                    "  \"expert_used\": %u,\n"
-                    "  \"layer_records\": %" PRIu64 ",\n"
-                    "  \"selections\": %" PRIu64 ",\n",
-                    p->n_layer,
-                    p->n_expert,
-                    p->n_expert_used,
-                    p->total_records,
-                    p->total_selections);
-            fputs("  \"cache_ns\": [", fp);
-            for (uint32_t ci = 0; ci < p->n_caps; ci++) {
-                if (ci) fputc(',', fp);
-                fprintf(fp, "%u", p->caps[ci]);
-            }
-            fputs("],\n", fp);
-            ds4_expert_profile_write_cache_summary(fp);
-            fputs("  \"layers_detail\": [\n", fp);
-            for (uint32_t il = 0; il < p->n_layer; il++) {
-                ds4_expert_profile_write_layer(fp, il);
-                fputs(il + 1u == p->n_layer ? "\n" : ",\n", fp);
-            }
-            fputs("  ]\n}\n", fp);
-
-            if (fclose(fp) != 0) {
-                fprintf(stderr,
-                        "ds4: failed to close expert profile output %s: %s\n",
-                        p->path,
-                        strerror(errno));
-            } else {
-                fprintf(stderr,
-                        "ds4: wrote Metal expert locality profile to %s "
-                        "(%" PRIu64 " layer records, %" PRIu64 " selections)\n",
-                        p->path,
-                        p->total_records,
-                        p->total_selections);
-            }
-        }
-    }
+    if (p->path) ds4_expert_profile_write_json(p, p->path);
     ds4_expert_profile_write_hotlist_file(p);
 
     free(p->path);

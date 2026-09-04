@@ -395,6 +395,20 @@ float ds4_session_directional_steering_ffn(ds4_session *s);
 /* Change steering for future evaluation without rebuilding the existing KV
  * state. Live changes are currently limited to non-distributed sessions. */
 int ds4_session_set_directional_steering_ffn(ds4_session *s, float scale);
+
+/* Dump the MoE expert-routing profile mid-process, optionally zeroing the
+ * counts so the next run starts clean.  Requires the server to have been
+ * started with DS4_EXPERT_PROFILE (Metal only).
+ *
+ * The profiler was built for cache sizing, where one dump per process is the
+ * right unit.  Read as an instrument it is cumulative, so without this a
+ * long-running server mixes every rollout into one histogram and no number can
+ * be attributed to the run that produced it.
+ *
+ * `path` NULL or empty writes to the configured DS4_EXPERT_PROFILE path.
+ * Call only while the engine is idle -- the record path takes no lock.
+ * Returns 0, or -1 no profiler active, -2 no path known, -3 write failed. */
+int ds4_expert_profile_flush(const char *path, bool reset);
 bool ds4_session_is_distributed(ds4_session *s);
 void ds4_session_set_progress(ds4_session *s, ds4_session_progress_fn fn, void *ud);
 /* UI-only progress. It may report fine-grained progress inside a prefill chunk;
