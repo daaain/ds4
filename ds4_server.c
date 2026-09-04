@@ -5978,12 +5978,26 @@ static bool try_repair_dsml(const char *s, size_t len, buf *out) {
     return true;
 }
 
+/* A generation the repetition guard stopped is a TRUNCATION, whatever it is
+ * called on the wire: it ended early with the text incomplete.  Every place
+ * that asks "did this turn finish properly?" therefore has to answer no for it
+ * exactly as it does for "length", or the collapse gets laundered back into a
+ * normal ending by the very code paths that were supposed to surface it.
+ * DS4_REPEAT_GUARD_FINISH renames the wire value, so compare against whatever
+ * the guard is configured to emit rather than a literal. */
+static bool finish_is_truncated(const char *finish) {
+    if (!finish) return false;
+    if (!strcmp(finish, "length")) return true;
+    const char *named = getenv("DS4_REPEAT_GUARD_FINISH");
+    return !strcmp(finish, (named && *named) ? named : "repetition");
+}
+
 static const char *tool_parse_failure_recovery_finish(const char *finish) {
     /* Once DSML failed to parse there is no executable tool call to report.
      * Preserve a true length stop, because callers can distinguish truncation
      * from a completed turn.  Every other non-error tool-parse failure becomes
      * a normal assistant stop with the raw model text returned as content. */
-    if (finish && !strcmp(finish, "length")) return "length";
+    if (finish_is_truncated(finish)) return finish;
     return "stop";
 }
 
@@ -7508,7 +7522,8 @@ static bool responses_sse_reasoning_delta(int fd, responses_stream *st,
 }
 
 static const char *responses_item_status_for_finish(const char *finish) {
-    if (finish && (!strcmp(finish, "length") || !strcmp(finish, "error"))) return "incomplete";
+    if (finish_is_truncated(finish)) return "incomplete";
+    if (finish && !strcmp(finish, "error")) return "incomplete";
     return "completed";
 }
 
@@ -7808,7 +7823,7 @@ static bool responses_sse_function_call_arguments_done(int fd, responses_stream 
 }
 
 static const char *responses_status_for_finish(const char *finish) {
-    if (finish && !strcmp(finish, "length")) return "incomplete";
+    if (finish_is_truncated(finish)) return "incomplete";
     if (finish && !strcmp(finish, "error")) return "failed";
     return "completed";
 }
@@ -7839,7 +7854,7 @@ static bool responses_sse_completed(int fd, const request *r,
      * of a "completed" wrapper marked failed in a sub-field. */
     const char *event_type = "response.completed";
     if (finish && !strcmp(finish, "error")) event_type = "response.failed";
-    else if (finish && !strcmp(finish, "length")) event_type = "response.incomplete";
+    else if (finish_is_truncated(finish)) event_type = "response.incomplete";
     const char *status = responses_status_for_finish(finish);
 
     buf b = {0};
@@ -8125,7 +8140,7 @@ static bool responses_final_response(int fd, bool enable_cors,
     if (finish && !strcmp(finish, "error")) {
         buf_puts(&b, ",\"error\":{\"code\":\"server_error\","
                      "\"message\":\"generation failed\"}");
-    } else if (finish && !strcmp(finish, "length")) {
+    } else if (finish_is_truncated(finish)) {
         buf_puts(&b, ",\"incomplete_details\":{\"reason\":\"max_tokens\"}");
     }
     buf_puts(&b, ",\"output\":[");
@@ -8213,7 +8228,7 @@ static bool final_response(int fd, bool enable_cors,
 
 static const char *anthropic_stop_reason(const char *finish) {
     if (finish && !strcmp(finish, "tool_calls")) return "tool_use";
-    if (finish && !strcmp(finish, "length")) return "max_tokens";
+    if (finish_is_truncated(finish)) return "max_tokens";
     return "end_turn";
 }
 
@@ -11650,7 +11665,8 @@ static bool should_remember_thinking_checkpoint(const request *r,
     if (!r || r->kind != REQ_CHAT || r->has_tools) return false;
     if (r->prompt_preserves_reasoning) return false;
     if (!ds4_think_mode_enabled(r->think_mode)) return false;
-    if (finish && (!strcmp(finish, "error") || !strcmp(finish, "length"))) return false;
+    if (finish_is_truncated(finish)) return false;
+    if (finish && !strcmp(finish, "error")) return false;
     if (thinking && thinking->inside) return false;
     return true;
 }
@@ -12274,6 +12290,197 @@ static void *decode_worker_main(void *arg) {
     return NULL;
 }
 
+/* ---------------------------------------------------------------------------
+ * Repetition-collapse guard.
+ *
+ * Over-steering, and occasionally an ordinary long generation, drives the model
+ * into a cycle: it emits the same handful of sentences until it hits the token
+ * cap.  The cost is not only the wasted minutes.  A collapsed turn reports
+ * finish_reason "length", which is exactly what an honest truncation reports,
+ * so downstream it is indistinguishable from a turn that simply had more to
+ * say -- and anything that counts sentences then counts one sentence hundreds
+ * of times and reports it as hundreds of observations.
+ *
+ * The statistic is the fraction of the last WINDOW tokens' K-token shingles
+ * that are distinct.  Measured over 64 real turns spanning seven campaigns it
+ * is sharply bimodal: healthy turns never fall below 0.969 and collapsed turns
+ * never rise above 0.128, with nothing at all in between.  A threshold
+ * anywhere in that gap gives identical answers, so 0.5 is chosen for being in
+ * the middle of nowhere rather than for being tuned.
+ *
+ * DETECT AND LABEL, DO NOT MITIGATE.  It would be easy to add a repetition
+ * penalty here and make the symptom go away.  That silently changes what the
+ * model is, so every measurement taken afterwards would be of a different
+ * sampler than the one being studied.  The guard stops the turn and names the
+ * reason; deciding what to do about it belongs to the caller.
+ *
+ * Off unless DS4_REPEAT_GUARD is set, because it ends generations.
+ * ------------------------------------------------------------------------- */
+
+#define REPEAT_GUARD_SHINGLE 12         /* words-worth of tokens; see above */
+#define REPEAT_GUARD_HASH_B  UINT64_C(0x100000001b3)
+
+typedef struct {
+    bool enabled;
+    int window;                 /* tokens of history the fraction is over */
+    double unique_min;          /* stop below this distinct-shingle fraction */
+    const char *finish;         /* finish_reason to report */
+
+    int *ring;                  /* window tokens, circular */
+    uint64_t *shingle;          /* hash of the shingle ENDING at each slot */
+    uint64_t *keys;             /* open-addressed multiset of live shingles */
+    uint32_t *counts;
+    size_t table_mask;
+    uint64_t rolling;           /* rolling hash of the last SHINGLE tokens */
+    uint64_t drop_pow;          /* B^SHINGLE, to retire the leaving token */
+    long long seen;             /* tokens fed so far */
+    int distinct;               /* keys with count > 0 */
+    int live;                   /* shingles currently in the window */
+} repeat_guard;
+
+static void repeat_guard_free(repeat_guard *g) {
+    free(g->ring); free(g->shingle); free(g->keys); free(g->counts);
+    memset(g, 0, sizeof(*g));
+}
+
+/* Returns false only on allocation failure, in which case the guard is simply
+ * off: a diagnostic must never be the reason a request cannot be served. */
+static bool repeat_guard_init(repeat_guard *g) {
+    memset(g, 0, sizeof(*g));
+    const char *on = getenv("DS4_REPEAT_GUARD");
+    if (!on || !*on) return true;
+    g->window = atoi(on);
+    if (g->window <= 0) g->window = 2048;
+    /* The window has to be several times the length of the cycle, or the
+     * repeats do not fit inside it to be counted: the collapse measured here
+     * cycles about 24 shingles and reads 0.012 at a window of 2048 but exactly
+     * 0.5 -- i.e. undetectable -- at a window of 48.  256 is the smallest
+     * setting that leaves room for a cycle of any length worth catching. */
+    if (g->window < 256) g->window = 256;
+
+    g->unique_min = 0.5;
+    const char *thr = getenv("DS4_REPEAT_GUARD_UNIQUE");
+    if (thr && *thr) {
+        double v = atof(thr);
+        if (v > 0.0 && v < 1.0) g->unique_min = v;
+    }
+    const char *fin = getenv("DS4_REPEAT_GUARD_FINISH");
+    g->finish = (fin && *fin) ? fin : "repetition";
+
+    size_t cap = 1;
+    while (cap < (size_t)g->window * 2) cap <<= 1;
+    g->ring    = calloc((size_t)g->window, sizeof(*g->ring));
+    g->shingle = calloc((size_t)g->window, sizeof(*g->shingle));
+    g->keys    = calloc(cap, sizeof(*g->keys));
+    g->counts  = calloc(cap, sizeof(*g->counts));
+    if (!g->ring || !g->shingle || !g->keys || !g->counts) {
+        repeat_guard_free(g);
+        return false;
+    }
+    g->table_mask = cap - 1;
+    /* h holds the last SHINGLE tokens as sum(t[i-j] * B^j), so the token
+     * leaving carries B^(SHINGLE-1), not B^SHINGLE.  Getting this exponent
+     * wrong does not look like a bug: the hash stays deterministic, but two
+     * identical shingles at different positions hash differently, so every
+     * window reads as 100% unique and the guard silently never fires. */
+    g->drop_pow = 1;
+    for (int i = 0; i < REPEAT_GUARD_SHINGLE - 1; i++) g->drop_pow *= REPEAT_GUARD_HASH_B;
+    g->enabled = true;
+    return true;
+}
+
+/* Open addressing with linear probing.  A shingle hash of 0 is remapped so that
+ * a zero key can mean "empty"; the collision that costs is one shared slot in
+ * 2^64, which no run will ever notice.
+ *
+ * Dead keys MUST be removed rather than left with a zero count.  At most
+ * `window` shingles are ever live, but a long generation walks through orders
+ * of magnitude more distinct ones than that, so a table that only ever adds
+ * fills with corpses and the probe loop stops terminating.  Deletion is the
+ * backward-shift kind for that reason: tombstones would fill it just as
+ * surely, only more slowly. */
+static size_t repeat_guard_home(const repeat_guard *g, uint64_t key) {
+    return (size_t)(key * UINT64_C(0x9e3779b97f4a7c15)) & g->table_mask;
+}
+
+static size_t repeat_guard_find(repeat_guard *g, uint64_t key) {
+    size_t i = repeat_guard_home(g, key);
+    while (g->keys[i] && g->keys[i] != key) i = (i + 1) & g->table_mask;
+    return i;   /* the key, or the empty slot it would occupy */
+}
+
+static void repeat_guard_erase(repeat_guard *g, size_t hole) {
+    g->keys[hole] = 0;
+    g->counts[hole] = 0;
+    size_t j = hole;
+    for (;;) {
+        j = (j + 1) & g->table_mask;
+        if (!g->keys[j]) return;
+        /* Move an entry back only when its home does not lie in (hole, j],
+         * i.e. when the hole sits between its home and where it ended up. */
+        size_t home = repeat_guard_home(g, g->keys[j]);
+        bool wrapped = j < hole;
+        bool keep = wrapped ? (home > hole || home <= j) : (home > hole && home <= j);
+        if (keep) continue;
+        g->keys[hole] = g->keys[j];
+        g->counts[hole] = g->counts[j];
+        g->keys[j] = 0;
+        g->counts[j] = 0;
+        hole = j;
+    }
+}
+
+static void repeat_guard_add(repeat_guard *g, uint64_t key) {
+    size_t i = repeat_guard_find(g, key);
+    if (!g->keys[i]) { g->keys[i] = key; g->counts[i] = 0; g->distinct++; }
+    g->counts[i]++;
+}
+
+static void repeat_guard_sub(repeat_guard *g, uint64_t key) {
+    size_t i = repeat_guard_find(g, key);
+    if (!g->keys[i] || !g->counts[i]) return;
+    if (--g->counts[i] == 0) { g->distinct--; repeat_guard_erase(g, i); }
+}
+
+/* Feed one sampled token.  True means the generation has collapsed. */
+static bool repeat_guard_feed(repeat_guard *g, int token) {
+    if (!g->enabled) return false;
+    const size_t slot = (size_t)(g->seen % g->window);
+
+    /* Retire the shingle that just fell out of the window, and the token whose
+     * contribution leaves the rolling hash. */
+    if (g->seen >= g->window) {
+        uint64_t old = g->shingle[slot];
+        if (old) {
+            repeat_guard_sub(g, old);
+            g->live--;
+        }
+    }
+    if (g->seen >= REPEAT_GUARD_SHINGLE) {
+        size_t leaving = (size_t)((g->seen - REPEAT_GUARD_SHINGLE) % g->window);
+        g->rolling -= (uint64_t)(uint32_t)g->ring[leaving] * g->drop_pow;
+    }
+    g->rolling = g->rolling * REPEAT_GUARD_HASH_B + (uint64_t)(uint32_t)token;
+    g->ring[slot] = token;
+
+    /* A shingle only exists once SHINGLE tokens have gone by. */
+    if (g->seen + 1 >= REPEAT_GUARD_SHINGLE) {
+        uint64_t h = g->rolling ? g->rolling : 1;
+        g->shingle[slot] = h;
+        repeat_guard_add(g, h);
+        g->live++;
+    } else {
+        g->shingle[slot] = 0;
+    }
+    g->seen++;
+
+    /* Judge only on a full window -- a short turn is not evidence of anything
+     * -- and only every 64 tokens, since the verdict cannot change faster than
+     * the window turns over. */
+    if (g->seen < g->window || (g->seen % 64) != 0 || g->live <= 0) return false;
+    return (double)g->distinct / (double)g->live < g->unique_min;
+}
+
 /* Execute one request on the worker-owned session.
  *
  * Clients resend full prompts as text.  The worker first tries the old exact
@@ -12767,6 +12974,8 @@ decode_again:
     dsml_decode_tracker dsml_tracker;
     dsml_decode_tracker_init(&dsml_tracker);
     dsml_tracker.model_syntax = j->req.model_syntax;
+    repeat_guard rguard;
+    repeat_guard_init(&rguard);
 
     server_generation_enter(s);
     while (!g_stop_requested && !job_cancelled(j) && completion < max_tokens &&
@@ -12880,6 +13089,10 @@ decode_again:
             completion++;
             kept++;
 
+            /* Checked after the piece is appended below, so a collapsed turn
+             * keeps the text that proves it collapsed. */
+            const bool collapsed = repeat_guard_feed(&rguard, token);
+
             trace_piece(s, trace_id, piece, piece_len);
             buf_append(&text, piece, piece_len);
             const bool was_thinking = thinking.inside;
@@ -12961,6 +13174,21 @@ decode_again:
                 break;
             }
             free(piece);
+
+            /* After streaming, so the caller keeps the text that demonstrates
+             * the collapse, and reports its own finish_reason rather than
+             * hiding behind "length" -- the disguise is the whole problem. */
+            if (collapsed) {
+                finish = rguard.finish;
+                stop_decode = true;
+                server_log(DS4_LOG_WARNING,
+                           "ds4-server: repetition collapse after %d generated tokens "
+                           "(%d distinct of %d shingles in the last %d, below %.2f); "
+                           "stopping with finish_reason=%s",
+                           completion, rguard.distinct, rguard.live,
+                           rguard.window, rguard.unique_min, rguard.finish);
+                break;
+            }
 
             if (j->req.kind == REQ_CHAT && j->req.has_tools) {
                 if (thinking_gates_tool_markers && thinking.inside) {
@@ -13092,6 +13320,10 @@ decode_again:
         if (stop_decode) break;
     }
     server_generation_leave(s);
+    /* Freed here rather than at the exits: every path that reaches a
+     * `goto decode_again` passes through this point first, so the retry
+     * re-initialises a cleared struct instead of leaking the old one. */
+    repeat_guard_free(&rguard);
 
     if (job_cancelled(j)) {
         request_live_state_clear(s, slot);
@@ -20479,6 +20711,85 @@ static void test_server_image_embedding_cache(void) {
     TEST_ASSERT(cache.bytes == 0);
 }
 
+static bool repeat_guard_run(const char *window, const char *unique,
+                             const int *toks, int n, int *fired_at) {
+    /* setenv rather than a parameter: the guard reads its configuration from
+     * the environment precisely so that nothing has to thread it through the
+     * decode path, and the test should exercise the real entry point. */
+    if (window) setenv("DS4_REPEAT_GUARD", window, 1); else unsetenv("DS4_REPEAT_GUARD");
+    if (unique) setenv("DS4_REPEAT_GUARD_UNIQUE", unique, 1); else unsetenv("DS4_REPEAT_GUARD_UNIQUE");
+    repeat_guard g;
+    TEST_ASSERT(repeat_guard_init(&g));
+    *fired_at = -1;
+    for (int i = 0; i < n; i++) {
+        if (repeat_guard_feed(&g, toks[i]) && *fired_at < 0) *fired_at = i + 1;
+    }
+    bool enabled = g.enabled;
+    repeat_guard_free(&g);
+    unsetenv("DS4_REPEAT_GUARD");
+    unsetenv("DS4_REPEAT_GUARD_UNIQUE");
+    return enabled;
+}
+
+static void test_repeat_guard(void) {
+    enum { N = 6000 };
+    static int toks[N];
+    int fired = 0;
+
+    /* Off unless asked for: the guard ends generations, so silence is the only
+     * safe default. */
+    for (int i = 0; i < N; i++) toks[i] = 7;
+    TEST_ASSERT(!repeat_guard_run(NULL, NULL, toks, N, &fired));
+    TEST_ASSERT(fired == -1);
+
+    /* One token forever is the most degenerate stream there is, and it must be
+     * caught the moment a full window exists -- not before. */
+    TEST_ASSERT(repeat_guard_run("2048", NULL, toks, N, &fired));
+    TEST_ASSERT(fired == 2048);
+
+    /* Never repeating must never fire, however long the run. */
+    for (int i = 0; i < N; i++) toks[i] = i;
+    TEST_ASSERT(repeat_guard_run("2048", NULL, toks, N, &fired));
+    TEST_ASSERT(fired == -1);
+
+    /* A partial window is not evidence: the same degenerate stream, stopped
+     * one token short of the window, must stay silent.  This is the check that
+     * keeps a short reply from being called a collapse. */
+    for (int i = 0; i < N; i++) toks[i] = 7;
+    TEST_ASSERT(repeat_guard_run("2048", NULL, toks, 2047, &fired));
+    TEST_ASSERT(fired == -1);
+
+    /* A real collapse is a cycle rather than a stuck token.  Period 24 is what
+     * the measured one ran at. */
+    for (int i = 0; i < N; i++) toks[i] = i % 24;
+    TEST_ASSERT(repeat_guard_run("2048", NULL, toks, N, &fired));
+    TEST_ASSERT(fired == 2048);
+
+    /* The threshold is honoured in both directions: a cycle of period 24 fills
+     * a 2048-token window at about 0.012 distinct, so 0.5 catches it and 0.005
+     * does not. */
+    TEST_ASSERT(repeat_guard_run("2048", "0.005", toks, N, &fired));
+    TEST_ASSERT(fired == -1);
+
+    /* The window is clamped up: below a few multiples of the cycle length the
+     * repeats do not fit inside the window to be counted at all. */
+    TEST_ASSERT(repeat_guard_run("8", NULL, toks, N, &fired));
+    TEST_ASSERT(fired > 0);
+
+    /* A truncation by any name is still a truncation, or the collapse gets
+     * laundered back into a normal ending downstream. */
+    TEST_ASSERT(finish_is_truncated("length"));
+    TEST_ASSERT(finish_is_truncated("repetition"));
+    TEST_ASSERT(!finish_is_truncated("stop"));
+    TEST_ASSERT(!finish_is_truncated("tool_calls"));
+    TEST_ASSERT(!finish_is_truncated(NULL));
+    setenv("DS4_REPEAT_GUARD_FINISH", "cut_short", 1);
+    TEST_ASSERT(finish_is_truncated("cut_short"));
+    TEST_ASSERT(finish_is_truncated("length"));
+    TEST_ASSERT(!finish_is_truncated("repetition"));
+    unsetenv("DS4_REPEAT_GUARD_FINISH");
+}
+
 static void test_tokenize_byte_offsets(void) {
     /* Offsets are a running sum of the pieces' byte lengths, and the sum has to
      * land exactly on the text: a byte-level BPE vocabulary reconstructs what it
@@ -20579,6 +20890,7 @@ static void ds4_server_unit_tests_run(void) {
     test_request_defaults_use_min_p_filtering();
     test_chat_ignore_eos_contract();
     test_reasoning_effort_mapping();
+    test_repeat_guard();
     test_tokenize_byte_offsets();
     test_tokenize_request_parse();
     test_detokenize_request_parse();

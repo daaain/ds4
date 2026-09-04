@@ -167,6 +167,14 @@ static void print_model_runtime(FILE *fp, const help_colors *c,
     }
     if (tool == DS4_HELP_SERVER) {
         opt(fp, c, "-n, --tokens N", "Default max output tokens when clients omit a limit.");
+        /* An env var rather than a flag because it is a diagnostic, but unlike
+           the passive direction probe it ENDS generations, so it is worth
+           naming somewhere a reader will look. */
+        opt(fp, c, "  env DS4_REPEAT_GUARD=N",
+            "Stop a generation that has collapsed into repetition, over an N-token window "
+            "(bare value: 2048). Off by default. Reports finish_reason \"repetition\"; "
+            "DS4_REPEAT_GUARD_UNIQUE sets the distinct-shingle threshold (0.5) and "
+            "DS4_REPEAT_GUARD_FINISH renames the wire value.");
     }
     opt(fp, c, "-t, --threads N", "CPU helper threads for host-side/reference work.");
     opt(fp, c, "--power N", "GPU duty-cycle target, 1..100. Default: 100");
