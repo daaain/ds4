@@ -1,3 +1,75 @@
+<!-- ds4-science-fork: BEGIN -->
+<!--
+  Everything between these two markers is this fork's, and nothing outside them
+  is. Upstream README follows immediately below, unmodified, so a rebase should
+  only ever conflict inside this block -- if it conflicts elsewhere, take
+  upstream's side.
+-->
+
+# This fork: DwarfStar as an instrument
+
+A fork of DwarfStar carrying interpretability instrumentation: read a direction
+inside the graph while the model runs, steer along one, and see which MoE
+experts were chosen. Everything here is additive -- no upstream behaviour
+changes except the two defaults noted at the end.
+
+Used by [`ds4-forensics`](../ds4-forensics), whose `CLAUDE.md` carries the
+traps these features can hide (cached prefills that log nothing, silent row
+caps, attention-sink rows) and is worth reading before trusting a number.
+
+### Endpoints
+
+| endpoint | what it does |
+|---|---|
+| `GET/POST /v1/steering` | Read or change steering on a live server: `{file, ffn, attn, redirect_ffn, redirect_attn, reprefill}`. `file: null` clears. `reprefill: true` invalidates the session so the next pass is a cold prefill. |
+| `POST /v1/tokenize` | Text to token ids, **with byte offsets**, so a row can be tied to a span of the prompt. |
+| `POST /v1/detokenize` | Ids back to text, also with byte offsets. |
+| `POST /v1/expert_profile` | `{path, reset}` -- write the MoE routing profile as it stands and zero the counters. Both optional. Needs `DS4_EXPERT_PROFILE`; Metal only. |
+
+### Directional probe
+
+Logs the projection of the residual onto a set of directions, in-graph, without
+the stall of a full activation dump. A probe file is plain
+`[n_dir][n_layer][d_model]` float32.
+
+| variable | what it does |
+|---|---|
+| `DS4_DIR_PROBE_FILE` | The directions to project onto. Initialises lazily on the first request. |
+| `DS4_DIR_PROBE_LOG` | Where to write. `%t` expands to a UTC timestamp; the log is **append-only** and refuses a log whose header disagrees with the current probe file. |
+| `DS4_DIR_PROBE_POINT_BLOCK`, `DS4_DIR_PROBE_POINT_FFN_OUT` | Which point in the block to read. |
+| `DS4_DIR_PROBE_RAW`, `_ROWS`, `_MAX_ROWS`, `_SLOTS` | Capture raw residual rows instead of projections. Expensive: ~352 KB per generated token. |
+
+Log format is versioned in the magic: `DSPB` v1, `DSPC` v2 adds the token id of
+every decode row, `DSPD` v3 adds a per-mHC-stream slot axis and the activation
+norm (so a projection can be turned into a cosine).
+
+### Expert profile
+
+`DS4_EXPERT_PROFILE` writes per-layer MoE routing statistics as JSON: how many
+distinct experts a layer ever chose, and how much consecutive tokens' choices
+overlap (`avg_adjacent_overlap`, `avg_adjacent_jaccard`). `DS4_EXPERT_HOTLIST`
+writes the companion hotlist. Upstream wrote this once at engine close, so it
+was cumulative over the process; the endpoint above makes it per-run.
+
+### Repetition guard
+
+`DS4_REPEAT_GUARD=<window>` stops a generation that has collapsed into a loop
+and reports `finish_reason: "repetition"` instead of running to the token cap.
+`DS4_REPEAT_GUARD_UNIQUE` sets the unique-shingle threshold and
+`DS4_REPEAT_GUARD_FINISH` renames the wire value. **It labels; it does not
+mitigate** -- but a collapsed turn counted as ordinary output silently inflates
+anything pooled over sentences.
+
+### The two default changes
+
+* `--ctx` defaults to **200000** rather than the previous smaller default. A
+  32,768 window silently truncated agentic runs and was mistaken for the model
+  declining to finish.
+* Steering is settable at runtime, and can **redirect** a direction rather than
+  only remove it (`redirect_ffn`, `redirect_attn`).
+
+<!-- ds4-science-fork: END -->
+
 <p align="center">
   <img src="logo.svg" alt="DwarfStar logo" width="220">
 </p>
