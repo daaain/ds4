@@ -56,8 +56,14 @@ def nice_step(span, target_ticks):
     return 10 * magnitude
 
 
-def read_series(path, column, scale=1.0):
-    """Return [(ctx_tokens, value)] for one ds4-bench CSV column."""
+def read_series(path, column, scale=1.0, min_ctx=0):
+    """Return [(ctx_tokens, value)] for one ds4-bench CSV column.
+
+    min_ctx drops leading frontiers. A long sweep starts cold and passes
+    through the thermal trough before settling, so its early points measure
+    the machine warming up rather than the model, and plotting them next to
+    another run that started warm invents a crossing that is not there.
+    """
     points = []
     with open(path, newline="", encoding="utf-8-sig") as fh:
         for row in csv.DictReader(fh):
@@ -66,7 +72,7 @@ def read_series(path, column, scale=1.0):
                 y = float(row[column]) * scale
             except (KeyError, TypeError, ValueError):
                 continue
-            if y > 0:
+            if y > 0 and x >= min_ctx:
                 points.append((x, y))
     return sorted(points)
 
@@ -78,12 +84,18 @@ def render(series, title, subtitle, y_label, out_path, y_unit=""):
         raise SystemExit(f"no data for {out_path}")
 
     x_max = max(x for _, pts in series for x, _ in pts)
+    # Start the x axis near the data. A trimmed sweep begins well above zero,
+    # and anchoring at zero would spend most of the width on empty axis. The y
+    # axis still starts at zero: these series sit close together, and a
+    # truncated value axis would exaggerate how far apart they are.
+    x_lo = min(x for _, pts in series for x, _ in pts)
+    x_min = 0 if x_lo <= 8192 else (x_lo // 8192) * 8192
     y_max = nice_ceil(max(y for _, pts in series for _, y in pts) * 1.08)
     plot_w = WIDTH - M_LEFT - M_RIGHT
     plot_h = HEIGHT - M_TOP - M_BOTTOM
 
     def sx(x):
-        return M_LEFT + (x / x_max) * plot_w
+        return M_LEFT + ((x - x_min) / (x_max - x_min)) * plot_w
 
     def sy(y):
         return M_TOP + plot_h - (y / y_max) * plot_h
@@ -122,7 +134,7 @@ def render(series, title, subtitle, y_label, out_path, y_unit=""):
         v += step
 
     # X ticks every 8K tokens.
-    xt = 0
+    xt = x_min
     while xt <= x_max:
         x = sx(xt)
         add(f'<line x1="{x:.1f}" y1="{M_TOP + plot_h}" x2="{x:.1f}" '
@@ -172,6 +184,10 @@ def main():
                     help="labelled ds4-bench CSV; repeat for each run")
     ap.add_argument("--out-dir", default=".")
     ap.add_argument("--machine", default="")
+    ap.add_argument("--min-ctx", type=int, default=0, metavar="N",
+                    help="drop frontiers below N from the speed charts; use "
+                         "when a run started cold, so its warm-up is not "
+                         "plotted against a run that started warm")
     ap.add_argument("--kv-skip", action="append", default=[], metavar="NAME",
                     help="omit this run from the KV-cache chart; use for runs "
                          "whose cache is identical to another's, since an "
@@ -193,13 +209,13 @@ def main():
     written = []
 
     written.append(render(
-        [(n, read_series(p, "gen_tps")) for n, p in runs],
+        [(n, read_series(p, "gen_tps", min_ctx=args.min_ctx)) for n, p in runs],
         "Writing speed" + suffix,
         "Tokens produced per second while answering. Higher is better.",
         "Tokens per second", out / "compare_decode.svg"))
 
     written.append(render(
-        [(n, read_series(p, "prefill_tps")) for n, p in runs],
+        [(n, read_series(p, "prefill_tps", min_ctx=args.min_ctx)) for n, p in runs],
         "Reading speed" + suffix,
         "Tokens of your prompt digested per second before the answer starts. "
         "Higher is better.",

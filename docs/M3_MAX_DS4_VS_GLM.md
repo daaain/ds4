@@ -62,7 +62,13 @@ answer. DeepSeek's lead does not merely shrink; it disappears.
 | 115,000 | 14.4/s | 14.0/s | 125/s | 120/s |
 | 131,000 | 13.6/s | **13.8/s** | 115/s | **121/s** |
 
-![Writing speed to 128K](../speed-bench/m3_max_128k_decode.svg)
+![Writing speed past 48K](../speed-bench/m3_max_128k_decode.svg)
+
+![Reading speed past 48K](../speed-bench/m3_max_128k_prefill.svg)
+
+These two charts start at 48,000 tokens rather than zero. The long sweeps were
+a single pass each, so below that they are still measuring the laptop warming
+up — see [reproducing this](#reproducing-this).
 
 **Writing speed reaches parity somewhere between 82,000 and 98,000 tokens.**
 DeepSeek holds a steady ~10.5% lead up to 82,000, and from 98,000 onward the
@@ -91,26 +97,20 @@ shorter benchmark would give you.**
 Separate from the model itself, each running conversation holds a growing block
 of memory. This is what eventually limits how long a conversation can get.
 
-![Memory used to remember the conversation](../speed-bench/m3_max_kvcache.svg)
+![Memory used to remember the conversation](../speed-bench/m3_max_128k_kvcache.svg)
 
 | Conversation so far | DeepSeek | GLM |
 | --- | ---: | ---: |
 | 16,000 | 0.23 GB | 0.51 GB |
 | 32,000 | 0.44 GB | 0.87 GB |
 | 49,000 | 0.65 GB | 1.24 GB |
-| 63,000 | 0.84 GB | 1.56 GB |
-
-**GLM uses about 86% more.** That is worth knowing on a machine where the model
-already occupies 90 GB of 128: GLM's larger appetite arrives on top of a larger
-model.
-
-Measured out to 128,000 tokens, the growth is a straight line in both cases:
-
-| Conversation so far | DeepSeek | GLM |
-| --- | ---: | ---: |
 | 65,000 | 0.86 GB | 1.60 GB |
 | 98,000 | 1.28 GB | 2.33 GB |
 | 115,000 | 1.49 GB | 2.70 GB |
+
+**GLM uses about 86% more**, and the growth is a straight line for both out to
+128,000 tokens. That is worth knowing on a machine where the model already
+occupies 90 GB of 128: GLM's larger appetite arrives on top of a larger model.
 
 A useful way to put it: **GLM reaches any given memory footprint at roughly
 half the conversation length.** GLM at 65,000 tokens already holds more than

@@ -23,6 +23,21 @@ it cannot guess well enough for the arithmetic to work.
 Measured over 2,000-8,000 tokens of context. Over the full sweep to 65,000
 tokens the default setting averages 9.4/s against plain decode's 14.9/s.
 
+![Writing speed with and without MTP](../speed-bench/m3_max_mtp_decode.svg)
+
+The gap is wide and it widens with the conversation. It is also visibly
+*ragged* in a way the plain line is not — that jaggedness is the point of this
+page, and the next two sections are about it.
+
+Reading speed is unaffected, as it should be — the draft block only
+participates in writing:
+
+![Reading speed with and without MTP](../speed-bench/m3_max_mtp_prefill.svg)
+
+Memory is unaffected too. The per-conversation cache is **byte-identical**
+with and without `--mtp` at every context measured; the draft block reuses the
+same cache rather than keeping its own.
+
 ## Why: the arithmetic of guessing
 
 Turning on the timing counters (`--mtp-timing`) shows what each cycle costs.
@@ -125,4 +140,9 @@ Build: upstream `main` at `6289c51` plus `--mtp`/`--mtp-margin` support in
 Raw data in `speed-bench/`: `m3_max_glm53f_q2_mtp_pass1.csv` and `_pass2.csv`
 (full sweeps), `m3_max_glm53f_q2_mtp_margin_{default,0,1}.csv` (margin sweep),
 and `m3_max_glm53f_q2_mtp_timing.log` (347 logged cycles, the source of the
-acceptance figure).
+acceptance figure). Plain GLM for comparison is
+`m3_max_glm53f_q2_pass2.csv`; charts are drawn with
+`speed-bench/plot_comparison.py`.
+
+Both models' plain-decode comparison, including the long-context behaviour that
+this page does not cover, is in [DeepSeek vs GLM](M3_MAX_DS4_VS_GLM.md).

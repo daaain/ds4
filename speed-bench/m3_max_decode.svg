@@ -114,39 +114,4 @@ text{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,san
 <circle cx="792.0" cy="231.2" r="4" fill="#eb6834" stroke="#fcfcfb" stroke-width="2"/>
 <text class="slab" x="804.0" y="235.2" fill="#eb6834">GLM 5.3 Flash</text>
 <text class="tick" x="804.0" y="251.2">14.8</text>
-<path d="M100.3,293.4 L122.6,240.9 L144.9,298.5 L167.2,306.4 L189.6,284.3 L211.9,315.0 L234.2,320.5 L256.5,307.0 L278.8,313.6 L301.1,338.9 L323.4,320.2 L345.8,306.7 L368.1,329.0 L390.4,307.9 L412.7,312.0 L435.0,325.3 L457.3,326.0 L479.6,323.9 L501.9,247.2 L524.2,323.0 L546.6,316.5 L568.9,299.0 L591.2,275.3 L613.5,332.5 L635.8,328.1 L658.1,328.1 L680.4,339.5 L702.8,333.5 L725.1,278.5 L747.4,336.4 L769.7,296.7 L792.0,242.9" fill="none" stroke="#1baf7a" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
-<circle cx="100.3" cy="293.4" r="4" fill="#1baf7a" stroke="#fcfcfb" stroke-width="2"/>
-<circle cx="122.6" cy="240.9" r="4" fill="#1baf7a" stroke="#fcfcfb" stroke-width="2"/>
-<circle cx="144.9" cy="298.5" r="4" fill="#1baf7a" stroke="#fcfcfb" stroke-width="2"/>
-<circle cx="167.2" cy="306.4" r="4" fill="#1baf7a" stroke="#fcfcfb" stroke-width="2"/>
-<circle cx="189.6" cy="284.3" r="4" fill="#1baf7a" stroke="#fcfcfb" stroke-width="2"/>
-<circle cx="211.9" cy="315.0" r="4" fill="#1baf7a" stroke="#fcfcfb" stroke-width="2"/>
-<circle cx="234.2" cy="320.5" r="4" fill="#1baf7a" stroke="#fcfcfb" stroke-width="2"/>
-<circle cx="256.5" cy="307.0" r="4" fill="#1baf7a" stroke="#fcfcfb" stroke-width="2"/>
-<circle cx="278.8" cy="313.6" r="4" fill="#1baf7a" stroke="#fcfcfb" stroke-width="2"/>
-<circle cx="301.1" cy="338.9" r="4" fill="#1baf7a" stroke="#fcfcfb" stroke-width="2"/>
-<circle cx="323.4" cy="320.2" r="4" fill="#1baf7a" stroke="#fcfcfb" stroke-width="2"/>
-<circle cx="345.8" cy="306.7" r="4" fill="#1baf7a" stroke="#fcfcfb" stroke-width="2"/>
-<circle cx="368.1" cy="329.0" r="4" fill="#1baf7a" stroke="#fcfcfb" stroke-width="2"/>
-<circle cx="390.4" cy="307.9" r="4" fill="#1baf7a" stroke="#fcfcfb" stroke-width="2"/>
-<circle cx="412.7" cy="312.0" r="4" fill="#1baf7a" stroke="#fcfcfb" stroke-width="2"/>
-<circle cx="435.0" cy="325.3" r="4" fill="#1baf7a" stroke="#fcfcfb" stroke-width="2"/>
-<circle cx="457.3" cy="326.0" r="4" fill="#1baf7a" stroke="#fcfcfb" stroke-width="2"/>
-<circle cx="479.6" cy="323.9" r="4" fill="#1baf7a" stroke="#fcfcfb" stroke-width="2"/>
-<circle cx="501.9" cy="247.2" r="4" fill="#1baf7a" stroke="#fcfcfb" stroke-width="2"/>
-<circle cx="524.2" cy="323.0" r="4" fill="#1baf7a" stroke="#fcfcfb" stroke-width="2"/>
-<circle cx="546.6" cy="316.5" r="4" fill="#1baf7a" stroke="#fcfcfb" stroke-width="2"/>
-<circle cx="568.9" cy="299.0" r="4" fill="#1baf7a" stroke="#fcfcfb" stroke-width="2"/>
-<circle cx="591.2" cy="275.3" r="4" fill="#1baf7a" stroke="#fcfcfb" stroke-width="2"/>
-<circle cx="613.5" cy="332.5" r="4" fill="#1baf7a" stroke="#fcfcfb" stroke-width="2"/>
-<circle cx="635.8" cy="328.1" r="4" fill="#1baf7a" stroke="#fcfcfb" stroke-width="2"/>
-<circle cx="658.1" cy="328.1" r="4" fill="#1baf7a" stroke="#fcfcfb" stroke-width="2"/>
-<circle cx="680.4" cy="339.5" r="4" fill="#1baf7a" stroke="#fcfcfb" stroke-width="2"/>
-<circle cx="702.8" cy="333.5" r="4" fill="#1baf7a" stroke="#fcfcfb" stroke-width="2"/>
-<circle cx="725.1" cy="278.5" r="4" fill="#1baf7a" stroke="#fcfcfb" stroke-width="2"/>
-<circle cx="747.4" cy="336.4" r="4" fill="#1baf7a" stroke="#fcfcfb" stroke-width="2"/>
-<circle cx="769.7" cy="296.7" r="4" fill="#1baf7a" stroke="#fcfcfb" stroke-width="2"/>
-<circle cx="792.0" cy="242.9" r="4" fill="#1baf7a" stroke="#fcfcfb" stroke-width="2"/>
-<text class="slab" x="804.0" y="246.9" fill="#1baf7a">GLM 5.3 + MTP</text>
-<text class="tick" x="804.0" y="262.9">14.0</text>
 </svg>
