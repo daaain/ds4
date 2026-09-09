@@ -6,9 +6,10 @@ Both models fit on a 128 GB M3 Max at their smallest quantisation. This
 compares how fast each one actually is, measured on the same laptop on the
 same afternoon.
 
-**Short answer: DeepSeek is faster, by 10-27% depending on the length of the
-conversation.** GLM is steadier, and holds up better as the conversation grows.
-Neither difference is large enough to pick a model on speed alone.
+**Short answer: DeepSeek is faster in short and medium conversations, by
+10-27%. Past roughly 90,000 tokens they are level, and past 115,000 GLM reads
+faster.** GLM is the steadier of the two throughout, and uses 86% more memory
+to hold the conversation. Neither is far enough ahead to pick on speed alone.
 
 ## The numbers
 
@@ -40,15 +41,50 @@ conversation and only 10% faster on a very long one. DeepSeek loses about a
 quarter of its writing speed as the conversation grows from 2,000 to 65,000
 tokens; GLM loses about an eighth.
 
-The two curves are converging. Whether they would ever cross is not something
-this data answers — at 65,000 tokens DeepSeek is still ahead, and the models
-accept far longer conversations than that. Extrapolating two converging lines
-past the end of the measurements is how people talk themselves into conclusions
-the data does not support, so: unknown, and testable if it matters to you.
+The two curves converge — and past 65,000 tokens they meet. See
+[very long conversations](#very-long-conversations) below.
 
 **GLM is the more predictable of the two.** Across the long-conversation range
 its speed varies by well under a percent between repeat runs. DeepSeek varies a
 little more. Neither wobbles enough to notice while using them.
+
+## Very long conversations
+
+Pushing both models to 128,000 tokens — twice the range above — changes the
+answer. DeepSeek's lead does not merely shrink; it disappears.
+
+| Conversation so far | DeepSeek writes | GLM writes | DeepSeek reads | GLM reads |
+| --- | ---: | ---: | ---: | ---: |
+| 49,000 | 16.1/s | 14.5/s | 157/s | 133/s |
+| 65,000 | 15.7/s | 14.2/s | 151/s | 124/s |
+| 82,000 | 15.7/s | 14.2/s | 140/s | 121/s |
+| 98,000 | 13.9/s | 14.1/s | 127/s | 125/s |
+| 115,000 | 14.4/s | 14.0/s | 125/s | 120/s |
+| 131,000 | 13.6/s | **13.8/s** | 115/s | **121/s** |
+
+![Writing speed to 128K](../speed-bench/m3_max_128k_decode.svg)
+
+**Writing speed reaches parity somewhere between 82,000 and 98,000 tokens.**
+DeepSeek holds a steady ~10.5% lead up to 82,000, and from 98,000 onward the
+two are indistinguishable.
+
+**Reading speed actually crosses over.** From 65,000 to 131,000 tokens
+DeepSeek's reading speed falls 24%; GLM's falls under 3%. By 131,000 tokens GLM
+is the faster reader.
+
+The reason is structural. Both models use sparse attention, which scans what
+has already been said to decide what is worth attending to, and that scan grows
+with the conversation. DeepSeek does it on all 43 of its layers; GLM does it on
+12, using a cheaper recurrent mechanism for the other 34. At short context the
+difference is invisible; by 128,000 tokens it decides the ranking.
+
+Measured over the whole range past 65,000 tokens, GLM drifts by 0.04 tokens/s
+per 16,000 tokens of context — flat within measurement error — against
+DeepSeek's 0.35. GLM is also the steadier of the two out there, varying about
+a third as much between measurements.
+
+**If you work in very long conversations, that reverses the recommendation the
+shorter benchmark would give you.**
 
 ## Memory for the conversation
 
@@ -66,9 +102,44 @@ of memory. This is what eventually limits how long a conversation can get.
 
 **GLM uses about 86% more.** That is worth knowing on a machine where the model
 already occupies 90 GB of 128: GLM's larger appetite arrives on top of a larger
-model. At the 200,000-token context the server now defaults to, straight-line
-extrapolation puts GLM near 5 GB and DeepSeek near 2.6 GB — with the same
-caveat about extrapolation as above.
+model.
+
+Measured out to 128,000 tokens, the growth is a straight line in both cases:
+
+| Conversation so far | DeepSeek | GLM |
+| --- | ---: | ---: |
+| 65,000 | 0.86 GB | 1.60 GB |
+| 98,000 | 1.28 GB | 2.33 GB |
+| 115,000 | 1.49 GB | 2.70 GB |
+
+A useful way to put it: **GLM reaches any given memory footprint at roughly
+half the conversation length.** GLM at 65,000 tokens already holds more than
+DeepSeek does at 115,000.
+
+### Does it actually fit?
+
+Sampling system memory every 15 seconds through both 128,000-token runs:
+
+| | DeepSeek | GLM |
+| --- | ---: | ---: |
+| Peak pinned memory | 91.6 GB | **99.3 GB** |
+| Free memory, low point | 0.15 GB | 0.30 GB |
+| Swap used | flat, ~780 MB | flat, ~752 MB |
+
+**Both fit, with no paging at any point.** Swap did not grow by a single
+megabyte across an hour of running, which is the measurement that matters —
+free memory dropping near zero is normal and harmless when the shortfall is
+reclaimable disk cache.
+
+GLM at 128,000 tokens is the tightest configuration tested: 99.3 GB pinned on a
+128 GB machine, with free memory down to 0.3 GB. It works, but there is not
+much room left for anything else, and this is with nothing else running. Raw
+samples in `speed-bench/m3_max_128k_memory.csv`.
+
+One caveat on reading those: in `vm_stat`, "wired" and "anonymous" pages
+overlap — a wired anonymous page is counted in both — so adding them
+double-counts and will suggest you are out of memory when you are not. Watch
+pinned memory and swap.
 
 ## The thing that surprised us most
 
@@ -146,15 +217,26 @@ Host: MacBook Pro M3 Max, 40 GPU cores, 128 GiB, macOS 26.6.1, Metal.
 Build: upstream `main` at `6289c51`, Apple clang 21.0.0.
 Prompt: `speed-bench/promessi_sposi.txt`. 128 tokens generated per frontier.
 
-Raw data: `speed-bench/m3_max_*_pass1.csv` and `_pass2.csv` — both passes are
-published so the repeatability is visible rather than asserted.
+The 128,000-token runs used `--ctx-max 131072` and an 8 GiB snapshot budget, a
+single pass each. A sweep that long takes 24 minutes, so it is already at its
+sustained operating point well before it reaches 65,000 tokens — the region it
+was run to measure. Its early frontiers are *not* comparable with the tables
+above and should be ignored; those come from the two-pass sweeps.
+
+Raw data in `speed-bench/`: `m3_max_*_pass1.csv` and `_pass2.csv` (2K-64K,
+both passes published so repeatability is visible rather than asserted),
+`m3_max_*_128k.csv` (2K-128K), and `m3_max_128k_memory.csv` (memory sampled
+every 15 seconds through both long runs).
 
 ## What this does not tell you
 
 - **Which model is better.** This is speed only. A 10-27% difference is small
   next to any difference in answer quality, and quality is not measured here.
   `gguf-tools/quality-testing/` has fixtures for that.
-- **How they behave past 65,000 tokens.** Both accept much longer conversations.
+- **How they behave past 128,000 tokens.** Both accept longer conversations
+  than that — the server defaults to 200,000 — but GLM was already using
+  99.3 GB of this machine's 128 GB at 128,000, so the ceiling here is memory
+  rather than patience.
 - **How they behave on your machine.** A 30-core M3 Max has less memory
   bandwidth than the 40-core part measured here, and writing speed depends
   almost entirely on memory bandwidth.
