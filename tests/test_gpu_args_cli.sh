@@ -135,6 +135,25 @@ if [ -x ./ds4-bench ]; then
         fail "ds4-bench rejected basic DSpark options in option parsing"
     fi
 
+    ./ds4-bench --mtp --mtp-margin 1 -m /dev/null --prompt-file /dev/null \
+        > "$LOG" 2>&1
+    rc=$?
+    if [ $rc -ne 0 ] && ! grep -q "unknown option" "$LOG"; then
+        ok "ds4-bench parses --mtp-margin"
+    else
+        fail "ds4-bench rejected --mtp-margin in option parsing"
+    fi
+
+    ./ds4-bench --mtp-margin 9999 -m /dev/null --prompt-file /dev/null \
+        > "$LOG" 2>&1
+    rc=$?
+    if [ $rc -eq 2 ] && grep -q -- \
+        "--mtp-margin must be between 0 and 1000" "$LOG"; then
+        ok "ds4-bench range-checks --mtp-margin"
+    else
+        fail "ds4-bench did not reject an out-of-range --mtp-margin"
+    fi
+
     ./ds4-bench --dspark -m /dev/null --prompt-file /dev/null > "$LOG" 2>&1
     rc=$?
     if [ $rc -eq 2 ] && grep -q -- \
@@ -161,7 +180,9 @@ done
 
 # Embedded MTP uses one family-neutral switch; external support has its own
 # file option. The old GLM-specific spellings are intentionally rejected.
-for i in 0 1 3; do
+# ds4-bench carries the switch too, so an embedded MTP block can be swept
+# against ordinary decode on the same frontiers.
+for i in "${!BINS[@]}"; do
     name=${NAMES[$i]}; bin=${BINS[$i]}
     [ -x "$bin" ] || continue
     for flag in --mtp --mtp-timing; do
