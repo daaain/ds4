@@ -15,9 +15,9 @@ to hold the conversation. Neither is far enough ahead to pick on speed alone.
 
 Two speeds matter, and they are not the same thing:
 
-- **Reading** — how fast the model gets through what you have already written,
+- **Reading (prefill)** — how fast the model gets through what you have already written,
   before it starts replying. You wait for this once per message.
-- **Writing** — how fast words appear in the reply. You watch this happen.
+- **Writing (decode)** — how fast words appear in the reply. You watch this happen.
 
 | Conversation so far | DeepSeek reads | DeepSeek writes | GLM reads | GLM writes |
 | --- | ---: | ---: | ---: | ---: |
@@ -203,7 +203,7 @@ Charts: `python3 speed-bench/plot_comparison.py --run "NAME=FILE.csv" ...`
 ## Exactly what was measured
 
 There are two different DeepSeek V4 Flash checkpoints and several
-quantisations of each, so filenames alone are ambiguous.
+quantisations of each, so filenames are important to check.
 
 | | DeepSeek V4 Flash | GLM 5.3 Flash |
 | --- | --- | --- |
@@ -234,9 +234,8 @@ every 15 seconds through both long runs).
   next to any difference in answer quality, and quality is not measured here.
   `gguf-tools/quality-testing/` has fixtures for that.
 - **How they behave past 128,000 tokens.** Both accept longer conversations
-  than that — the server defaults to 200,000 — but GLM was already using
-  99.3 GB of this machine's 128 GB at 128,000, so the ceiling here is memory
-  rather than patience.
+  than that, but GLM was already using 99.3 GB of this machine's 128 GB at 128,000,
+  so the ceiling here is memory rather than patience.
 - **How they behave on your machine.** A 30-core M3 Max has less memory
   bandwidth than the 40-core part measured here, and writing speed depends
   almost entirely on memory bandwidth.
