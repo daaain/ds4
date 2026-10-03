@@ -1,0 +1,3 @@
+=== glm A_nostatic_preload start 00:35:54 env: DS4_METAL_DISABLE_STREAMING_STATIC_DECODE_MAP=1 DS4_METAL_STREAMING_EXPERT_HOTLIST_PROFILE=1 
+=== glm A_nostatic_preload killed after 1 frontier 00:40:18
+=== glm A_nostatic_preload exit 143 00:40:19

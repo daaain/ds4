@@ -1,0 +1,19 @@
+=== ssd70 runner finished; queue starts 23:06:10
+=== ds4f_q2_1002_resident_pass1 start 23:06:35  ctx_max=65536 snapshot=4GiB apps=6.1GiB args=
+=== ds4f_q2_1002_resident_pass1 exit 0 23:16:10 rows=32
+=== ds4f_q2_1002_resident_pass2 start 23:16:35  ctx_max=65536 snapshot=4GiB apps=7.9GiB args=
+=== ds4f_q2_1002_resident_pass2 exit 0 23:26:01 rows=32
+=== glm53f_q2_1002_resident_pass1 start 23:26:26  ctx_max=65536 snapshot=4GiB apps=8.3GiB args=
+=== glm53f_q2_1002_resident_pass1 exit 0 23:38:46 rows=32
+=== glm53f_q2_1002_resident_pass2 start 23:39:11  ctx_max=65536 snapshot=4GiB apps=9.7GiB args=
+=== glm53f_q2_1002_resident_pass2 exit 0 23:51:08 rows=32
+=== glm53f_q2_1002_mtp_pass1 start 23:51:33  ctx_max=65536 snapshot=4GiB apps=11.1GiB args=--mtp
+=== glm53f_q2_1002_mtp_pass1 exit 0 00:07:01 rows=32
+=== glm53f_q2_1002_mtp_pass2 start 00:07:26  ctx_max=65536 snapshot=4GiB apps=16.3GiB args=--mtp
+=== glm53f_q2_1002_mtp_pass2 exit 0 00:22:24 rows=32
+=== glm53f_q2_1002_mtp_margin_default start 00:22:49  ctx_max=8192 snapshot=4GiB apps=16.3GiB args=--mtp
+=== glm53f_q2_1002_mtp_margin_default exit 0 00:24:25 rows=4
+=== glm53f_q2_1002_mtp_margin_1 start 00:24:50  ctx_max=8192 snapshot=4GiB apps=17.4GiB args=--mtp --mtp-margin 1
+=== glm53f_q2_1002_mtp_margin_1 exit 0 00:26:24 rows=4
+=== glm53f_q2_1002_mtp_margin_0 start 00:26:49  ctx_max=8192 snapshot=4GiB apps=18.7GiB args=--mtp --mtp-margin 0
+=== glm53f_q2_1002_mtp_margin_0 exit 0 00:28:21 rows=4
