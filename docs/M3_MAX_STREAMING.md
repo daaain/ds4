@@ -8,11 +8,15 @@ of your machine. This page measures what happens when you ask for less: an
 expert cache capped so that roughly 70 GiB of weights stay resident and the
 remainder is read from the GGUF on demand.
 
-**Short answer: it works well for DeepSeek and not at all for GLM.** DeepSeek
-gives up about a third of its reading speed and almost none of its writing
-speed, at the cost of a one-second pause before each reply. GLM, asked for the
-same budget, declines it: it maps all 90 GiB of its experts anyway and plans
-106 GiB in total, which is more memory than running it resident.
+**Short answer: DeepSeek streams well today; GLM streams only with a fix that
+is not yet merged.** DeepSeek gives up about a third of its reading speed and
+almost none of its writing speed at long context, at the cost of a one-second
+pause before each reply. Upstream GLM, asked for the same budget, declines it:
+it maps all 90 GiB of its experts anyway and plans 106 GiB in total, which is
+more memory than running it resident. With the five-commit fix on
+`fix/glm53-metal-iq2-q2k-stream-cache`, GLM keeps to a 73 GiB plan and writes at
+about 14 tokens per second against 17.7 resident, with replies starting in well
+under a second.
 
 ## What was asked for
 
@@ -50,6 +54,10 @@ Reading and writing speed in tokens per second; a token is roughly ¾ of a word.
 
 ![Writing speed, resident vs streamed](../speed-bench/m3_max_streaming_decode.svg)
 
+The GLM line is the fixed build [described below](#glm-with-the-fix-the-budget-is-kept),
+measured to 8,000 tokens only. Upstream GLM is left out of the charts: with the
+budget ignored it maps the whole file, so it is not streaming at all.
+
 **The writing penalty disappears as the conversation grows** — 38% at 2,000
 tokens, 5% at 32,000. Past about 24,000 tokens the two configurations write at
 the same speed. At long context, attention over what has already been said
@@ -73,9 +81,9 @@ A 31× increase. Sustained writing speed at long context is nearly identical, so
 a streamed reply *reads* at almost the same rate once it starts — it just starts
 about 1.3 seconds late, every time.
 
-## GLM: the budget is ignored
+## GLM upstream: the budget is ignored
 
-Given the same flags, GLM 5.3 Flash reports this instead:
+Given the same flags, upstream GLM 5.3 Flash reports this instead:
 
     GLM SSD streaming full resident layers: 0 (auto selected 0 layers)
     GLM SSD streaming request adjusted to fit memory: cache 8829 -> 1363 experts
@@ -107,47 +115,132 @@ compressor and 0.19 MB of swap.
 
 ### Why
 
-On Metal, `metal_graph_stream_decode_static_map_enabled()` (`ds4.c:19739`)
-returns `true` unconditionally, so the GLM streaming path tries the global
-static map first and falls back to per-layer streaming only if the map "does not
-fit" (`ds4.c:68440-68465`). **That fit check is against total RAM, not free
-RAM** — so on a 128 GiB machine a 90 GiB map always fits, and an explicit
+Two upstream decisions combine.
+
+**GLM 5.3 Q2's expert layout has no cache route on Metal.** Its routed experts
+are IQ2_XXS gate/up with a Q2_K down projection and eight experts per token.
+`glm_stream_selected_expert_cache_supported` refuses that layout on Apple unless
+exactly six experts are used, because the only Metal kernel for an IQ2/Q2_K down
+projection through the cache sums exactly six. DeepSeek V4 Flash has the same
+layout with six experts, which is why it streams. For GLM, no layer counts as
+streamed, so the static decode map has to cover every routed tensor: the whole
+file.
+
+**The static map wins whenever it fits, judged against total RAM.** On Metal,
+`metal_graph_stream_decode_static_map_enabled()` (`ds4.c:19739`) returns `true`
+unconditionally, so the GLM streaming path tries the global static map first and
+falls back to per-layer streaming only if the map "does not fit"
+(`ds4.c:68440-68465`). That fit check is against total RAM, not free RAM — so on
+a 128 GiB machine a 90 GiB map always fits, and an explicit
 `--ssd-streaming-cache-experts` is reduced to make room for it.
 
-This is a sensible heuristic for the case the feature was built for, where the
-model is larger than RAM and mapping everything is the best available move. It
-is the wrong question for "the model fits, but I want my memory back", which is
-the case measured here. DeepSeek has no equivalent path and honours the budget
-as given.
+The second is a sensible heuristic for the case the feature was built for, where
+the model is larger than RAM and mapping everything is the best available move.
+It is the wrong question for "the model fits, but I want my memory back", which
+is the case measured here.
 
-### Forcing the issue does not yet work either
+### The fallback is worse
 
-`DS4_METAL_DISABLE_STREAMING_STATIC_DECODE_MAP=1` does produce the intended
-regime — the log says `decode map: per-layer fallback`, the cache is honoured at
-62.00 GiB, and the plan is 73.58 GiB. One frontier was measured:
+Where the static map is disabled, or does not fit, GLM takes a per-layer
+fallback. That keeps to the budget (73 GiB planned) but maps each layer's whole
+expert span from the GGUF on every token, and **never fills the cache it
+budgeted** — the cache route is still refused.
 
-| ctx | reading | writing |
-| ---: | ---: | ---: |
-| 2,048 | 140/s | 1.09/s |
+| Upstream GLM, per-layer fallback | reading | writing | first token |
+| --- | ---: | ---: | ---: |
+| 128 GB Mac, 62 GiB cache | 162/s | 0.58/s | 2.0 s |
+| Simulated 64 GB Mac, 28 GiB cache | 123/s | **0.03/s** | 32.7 s |
 
-That is 15× slower than DeepSeek under the same budget. **It is also not a fair
-measurement, and should not be quoted as one:** GLM demand-fills its expert
-cache unless `--ssd-streaming-preload-experts N` is given explicitly, so this
-number is a completely cold 58 GiB cache being filled from the GGUF during its
-first 128 tokens. For comparison, DeepSeek's own first frontier reads 13.9/s
-against 17/s once warm, and that is *with* its automatic preload doing the work.
+Both at a 2,048-token prompt. On the 128 GB machine, spare RAM holds much of
+the file in page cache; with 64 GB locked away it cannot, and 32 tokens took
+about 18 minutes.
 
-GLM's genuine streaming performance at this budget is therefore **unmeasured**.
-Three untried levers, in the order worth trying:
+An earlier version of this page reported 1.09/s for this regime and put it down
+to a cold cache filling during its first 128 tokens. That was wrong: the cache
+is never filled at all. Preloading it (`--ssd-streaming-preload-experts`) makes
+no difference, because the seeder skips every layer for the same reason the
+cache route is refused.
 
-- `--ssd-streaming-preload-experts N` — populate the cache before decoding.
-- `--ssd-streaming-full-layers N` — keep the first N routed layers wholly
-  resident and stream the rest. The auto-selection chose 0 layers; GLM's
-  recurrent design may need its early layers hot.
-- `--simulate-used-memory 40GB` — lock 40 GiB before load so the machine
-  presents as 88 GiB, the 90 GiB static map genuinely does not fit, and the
-  per-layer path is taken *with* the footprint cap enforced. The cleanest way to
-  test the regime this page is about.
+This matters beyond this page: **on a Mac where GLM 5.3 Q2 genuinely does not
+fit, this fallback is what upstream does by default.**
+
+## GLM with the fix: the budget is kept
+
+`fix/glm53-metal-iq2-q2k-stream-cache` adds the missing Q2_K kernels for decode
+and prefill through the cache, plus prefill scheduling to go with them. The
+details are in [the PR description](../speed-bench/PR_glm53_metal_stream_cache.md).
+With the same command, the plan becomes:
+
+    GLM SSD streaming decode map: global 8.24 GiB
+    resident model 8.24 GiB + expert cache 58.20 GiB + prefill reserve 3.80 GiB
+    = 73.26 GiB planned
+
+Wired memory held at 66–75 GiB throughout, and no swap was added during the
+runs (about 10 GB was already in use from earlier benchmarks).
+
+Measured to 8,000 tokens, one pass:
+
+| Conversation so far | resident | streamed | reading | writing |
+| --- | ---: | ---: | ---: | ---: |
+| 2,000 | 178/17.1 | 124/11.8 | −30% | −31% |
+| 4,000 | 159/17.7 | 132/13.9 | −18% | −21% |
+| 6,000 | 162/17.7 | 138/13.9 | −15% | −22% |
+| 8,000 | 162/17.7 | 122/13.9 | −25% | −21% |
+
+Writing is the steady rate, as in the DeepSeek table.
+
+**Over this range GLM loses no more than DeepSeek does, and starts replying
+sooner.** DeepSeek streamed loses 28–40% on reading and 23–38% on writing at
+the same four points. Where the two differ clearly is the first token:
+
+| First token | 2,000 | 4,000 | 6,000 | 8,000 |
+| --- | ---: | ---: | ---: | ---: |
+| GLM resident | 51 ms | 52 ms | 52 ms | 51 ms |
+| GLM streamed (fixed) | 698 ms | 178 ms | 138 ms | 131 ms |
+| DeepSeek streamed | 666 ms | 995 ms | 1,248 ms | 1,360 ms |
+
+The likely reason is the fix's last commit, which serves large prefill chunks
+through the cache and reads each layer's missing experts ahead, so decoding
+starts from a warm cache. Upstream DeepSeek does not do that. The two were
+built from different trees, though, so treat this as a lead rather than a
+like-for-like result.
+
+**Treat the reading figures as optimistic.** The same build, 70 minutes later
+and straight after a run of back-to-back benchmarks, measured 96/94/98 reading
+and 9.7–11.5 writing at 2,000–6,000. Identical runs with default flags in that
+same window differed from each other by up to 25%, so this looks like drift
+rather than a property of the build — but only a clean two-pass sweep will
+settle it.
+
+### A long prompt, and follow-up messages
+
+Two shapes of use the sweep does not cover, both with the 62 GiB cache:
+
+| | reading | writing | first token |
+| --- | ---: | ---: | ---: |
+| One 16,000-token prompt (two runs) | 111–112/s | 12.2–12.5/s | 0.16–0.17 s |
+| 128-token follow-ups after a 2,000-token prompt | 36–51/s | 12.9–13.8/s | 0.11–0.12 s |
+
+Each follow-up message takes 2.5–3.6 seconds to read in. Before the fix's
+fourth commit it was about 36 seconds, because short chunks touched almost
+every expert of every layer and faulted whole layers in from the GGUF.
+
+### On a smaller Mac
+
+A simulated 64 GB Mac (`--simulate-used-memory 64GB` locks 64 GB before the
+model loads) with a 28 GiB cache, about what such a machine sizes for itself.
+The plan is 39.2 GiB. Upstream is forced onto the per-layer fallback here, the
+path it takes by default on a real 64 GB Mac:
+
+| | reading at 2,000 | writing at 2,000 | first token | reading at 4,000 | writing at 4,000 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| upstream | 123/s | **0.03/s** | 32.7 s | not run | — |
+| fixed (two runs) | 104–110/s | **7.3–7.4/s** | 0.8–1.3 s | 125–128/s | 9.0/s |
+
+A single 16,000-token prompt on the fixed build reads at 96–98/s, writes at
+6.7/s, and starts replying in 0.35–0.38 s. At 2,000 tokens the fixed build
+writes about 240 times faster than upstream: the difference between unusable
+and usable.
 
 ## Does it leave you a usable laptop?
 
@@ -173,7 +266,11 @@ VMs went from 31 GiB to 3 GiB within a minute of launch, still running but with
 nothing warm left in them. They are fine when you return to them; they are not
 fast for the first little while.
 
+GLM with the fix was not run against a busy machine.
+
 ## Reproducing this
+
+DeepSeek, and upstream GLM:
 
 ```sh
 export DS4_BENCH_SNAPSHOT_MAX_BYTES=4294967296
@@ -186,23 +283,50 @@ mid-sweep dip from expert-cache churn — 16K–20K on one run, 20K–26K on ano
 down to 108/11.5 at its worst — which does not survive into pass 2 and is not a
 property of the context length.
 
+GLM with the fix, built in a worktree of the fix branch. Each script runs the
+binaries from inside that worktree, so its Metal shaders are the ones used:
+
+```sh
+W=../ds4-glm53-stream   # worktree of fix/glm53-metal-iq2-q2k-stream-cache, built
+speed-bench/run_glm_sweep.sh      sweep  $W 8192 128 --ssd-streaming-cache-experts 62GB
+speed-bench/run_glm_longprompt.sh long16k $W 16384 --ssd-streaming-cache-experts 62GB
+speed-bench/run_glm_appends.sh    appends $W 128 4 --ssd-streaming-cache-experts 62GB
+speed-bench/run_glm_sweep.sh      sim64  $W 4096 32 --ssd-streaming-cache-experts 28GB \
+  --simulate-used-memory 64GB
+```
+
+For upstream's per-layer fallback, run the last line against an upstream build
+with `DS4_METAL_DISABLE_STREAMING_STATIC_DECODE_MAP=1`.
+
 Charts: `speed-bench/replot.sh`.
 
-Host: MacBook Pro M3 Max, 40 GPU cores, 128 GiB, macOS 27.0.1, Metal.
-Build: `058e5a4`, Apple clang. Both models at their smallest quantisation; see
+Host: MacBook Pro M3 Max, 40 GPU cores, 128 GiB, macOS 27.0.1, Metal. Both
+models at their smallest quantisation; see
 [the model comparison](M3_MAX_DS4_VS_GLM.md#exactly-what-was-measured) for exact
-filenames and revisions. 2026-10-02.
+filenames and revisions.
+
+- DeepSeek, and upstream GLM with the static map: build `058e5a4`, Apple clang,
+  2026-10-02.
+- GLM fixed, and upstream GLM's per-layer fallback: the fix branch at `4bd088c`
+  and its base `0aaea5a`, 2026-10-03. Files are
+  `speed-bench/m3_max_glm53f_q2_1003_*`; the sweep above is `r2warm_62gb`, the
+  later lower run `fix_62gb_check`.
 
 ## What this does not tell you
 
-- **GLM's actual streaming speed.** Only the static-map regime was measured
-  properly. See the three levers above.
-- **Anything about budgets other than 62 GiB.** A larger cache would narrow the
-  reading gap; where the curve flattens is unmeasured.
+- **GLM's streaming speed past 8,000 tokens.** The fixed build has one sweep to
+  8,000 and two runs of a single 16,000-token prompt, against DeepSeek's two
+  passes to 32,000, which is why its line in the charts stops at 8,000.
+- **Whether the fix will be merged**, or in what form. Everything about fixed
+  GLM here describes an unmerged branch.
+- **A real 64 or 96 GB Mac.** The smaller-Mac figures lock memory on a 128 GB
+  machine. The GPU, the SSD and macOS's memory pressure behaviour are the
+  128 GB machine's.
+- **Anything about budgets other than 62 GiB** (and 28 GiB for the simulated
+  64 GB Mac). A larger cache would narrow the reading gap; where the curve
+  flattens is unmeasured.
 - **Quality.** This is speed only, and streaming does not change the arithmetic
-  — only when the weights arrive.
+  — only when the weights arrive. The fixed GLM build produces byte-identical
+  greedy output to resident over 96 tokens on two prompts.
 - **Behaviour past 32,000 tokens.** The streamed sweeps stop there; the resident
   sweeps run to 65,000.
-- **Other machines.** On a machine where these models genuinely do not fit, the
-  static map cannot be mapped and GLM takes the per-layer path by default. The
-  behaviour documented here is specific to a model that fits with room to spare.

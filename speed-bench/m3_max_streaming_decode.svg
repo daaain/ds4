@@ -96,25 +96,13 @@ text{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,san
 <circle cx="390.4" cy="235.4" r="4" fill="#eb6834" stroke="#fcfcfb" stroke-width="2"/>
 <circle cx="412.7" cy="235.8" r="4" fill="#eb6834" stroke="#fcfcfb" stroke-width="2"/>
 <circle cx="435.0" cy="234.0" r="4" fill="#eb6834" stroke="#fcfcfb" stroke-width="2"/>
-<text class="slab" x="447.0" y="238.0" fill="#eb6834">DeepSeek streamed</text>
-<text class="tick" x="447.0" y="254.0">14.6</text>
-<path d="M100.3,239.9 L122.6,231.3 L144.9,234.0 L167.2,233.4 L189.6,234.9 L211.9,232.8 L234.2,233.1 L256.5,236.0 L278.8,235.8 L301.1,232.1 L323.4,233.6 L345.8,243.2 L368.1,235.1 L390.4,239.4 L412.7,233.0 L435.0,234.2" fill="none" stroke="#1baf7a" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
-<circle cx="100.3" cy="239.9" r="4" fill="#1baf7a" stroke="#fcfcfb" stroke-width="2"/>
-<circle cx="122.6" cy="231.3" r="4" fill="#1baf7a" stroke="#fcfcfb" stroke-width="2"/>
-<circle cx="144.9" cy="234.0" r="4" fill="#1baf7a" stroke="#fcfcfb" stroke-width="2"/>
-<circle cx="167.2" cy="233.4" r="4" fill="#1baf7a" stroke="#fcfcfb" stroke-width="2"/>
-<circle cx="189.6" cy="234.9" r="4" fill="#1baf7a" stroke="#fcfcfb" stroke-width="2"/>
-<circle cx="211.9" cy="232.8" r="4" fill="#1baf7a" stroke="#fcfcfb" stroke-width="2"/>
-<circle cx="234.2" cy="233.1" r="4" fill="#1baf7a" stroke="#fcfcfb" stroke-width="2"/>
-<circle cx="256.5" cy="236.0" r="4" fill="#1baf7a" stroke="#fcfcfb" stroke-width="2"/>
-<circle cx="278.8" cy="235.8" r="4" fill="#1baf7a" stroke="#fcfcfb" stroke-width="2"/>
-<circle cx="301.1" cy="232.1" r="4" fill="#1baf7a" stroke="#fcfcfb" stroke-width="2"/>
-<circle cx="323.4" cy="233.6" r="4" fill="#1baf7a" stroke="#fcfcfb" stroke-width="2"/>
-<circle cx="345.8" cy="243.2" r="4" fill="#1baf7a" stroke="#fcfcfb" stroke-width="2"/>
-<circle cx="368.1" cy="235.1" r="4" fill="#1baf7a" stroke="#fcfcfb" stroke-width="2"/>
-<circle cx="390.4" cy="239.4" r="4" fill="#1baf7a" stroke="#fcfcfb" stroke-width="2"/>
-<circle cx="412.7" cy="233.0" r="4" fill="#1baf7a" stroke="#fcfcfb" stroke-width="2"/>
-<circle cx="435.0" cy="234.2" r="4" fill="#1baf7a" stroke="#fcfcfb" stroke-width="2"/>
-<text class="slab" x="447.0" y="238.2" fill="#1baf7a">GLM streamed</text>
-<text class="tick" x="447.0" y="254.2">14.6</text>
+<text class="slab" x="447.0" y="238.0" fill="#eb6834" stroke="#fcfcfb" stroke-width="4" paint-order="stroke">DeepSeek streamed</text>
+<text class="tick" x="447.0" y="254.0" stroke="#fcfcfb" stroke-width="4" paint-order="stroke">14.6</text>
+<path d="M100.3,285.0 L122.6,246.4 L144.9,245.3 L167.2,245.1" fill="none" stroke="#1baf7a" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="100.3" cy="285.0" r="4" fill="#1baf7a" stroke="#fcfcfb" stroke-width="2"/>
+<circle cx="122.6" cy="246.4" r="4" fill="#1baf7a" stroke="#fcfcfb" stroke-width="2"/>
+<circle cx="144.9" cy="245.3" r="4" fill="#1baf7a" stroke="#fcfcfb" stroke-width="2"/>
+<circle cx="167.2" cy="245.1" r="4" fill="#1baf7a" stroke="#fcfcfb" stroke-width="2"/>
+<text class="slab" x="179.2" y="249.1" fill="#1baf7a" stroke="#fcfcfb" stroke-width="4" paint-order="stroke">GLM streamed (fix)</text>
+<text class="tick" x="179.2" y="265.1" stroke="#fcfcfb" stroke-width="4" paint-order="stroke">13.8</text>
 </svg>

@@ -167,11 +167,15 @@ def render(series, title, subtitle, y_label, out_path, y_unit=""):
                 f'fill="{colour}" stroke="{SURFACE}" stroke-width="2"/>')
         # Direct label at the series end: identity is never colour-alone.
         lx, ly = pts[-1]
+        # A series that stops short of the axis end is labelled inside the
+        # plot, over other lines, so its label gets a surface-coloured halo.
+        halo = (f' stroke="{SURFACE}" stroke-width="4" paint-order="stroke"'
+                if lx < x_max else "")
         add(f'<text class="slab" x="{sx(lx) + 12:.1f}" y="{sy(ly) + 4:.1f}" '
-            f'fill="{colour}">{html.escape(name)}</text>')
+            f'fill="{colour}"{halo}>{html.escape(name)}</text>')
         end = f"{ly:,.1f}{y_unit}"
         add(f'<text class="tick" x="{sx(lx) + 12:.1f}" '
-            f'y="{sy(ly) + 20:.1f}">{end}</text>')
+            f'y="{sy(ly) + 20:.1f}"{halo}>{end}</text>')
 
     add("</svg>")
     Path(out_path).write_text("\n".join(o) + "\n", encoding="utf-8")

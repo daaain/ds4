@@ -13,8 +13,9 @@ memory to hold the conversation.
 
 If the model has to share the machine with anything substantial, see
 [SSD streaming](M3_MAX_STREAMING.md), which measures what a 70 GiB weight
-budget costs. The two answers are different: DeepSeek streams well, GLM
-does not stream at all.
+budget costs. The two answers are different: DeepSeek streams well, while
+upstream GLM does not stream at all on this machine and needs an unmerged fix
+to keep to the budget.
 
 ## The numbers
 
