@@ -92,6 +92,13 @@ Unset that old experimental sort flag to use the new prefill-only default.
 These switches use presence semantics: unset them to return to the default;
 setting a switch to `0` still enables it.
 
+## M3 Max measurements
+
+A 128 GB M3 Max running DeepSeek V4 Flash and GLM 5.3 Flash at a 70 GiB weight
+budget — what streaming costs when the model would otherwise fit, and the
+GLM static-decode-map behaviour that makes an explicit cache budget ineffective
+on that machine: [SSD streaming on an M3 Max](M3_MAX_STREAMING.md).
+
 ## M5 Max measurements
 
 On a 128 GB M5 Max, with automatic cache sizing and no speculative decoding:

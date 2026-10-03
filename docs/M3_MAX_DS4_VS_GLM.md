@@ -6,10 +6,15 @@ Both models fit on a 128 GB M3 Max at their smallest quantisation. This
 compares how fast each one actually is, measured on the same laptop on the
 same afternoon.
 
-**Short answer: DeepSeek is faster in short and medium conversations, by
-10-27%. Past roughly 90,000 tokens they are level, and past 115,000 GLM reads
-faster.** GLM is the steadier of the two throughout, and uses 86% more memory
-to hold the conversation. Neither is far enough ahead to pick on speed alone.
+**Short answer: DeepSeek is faster everywhere measured here — 12-30% on
+writing and 17-48% on reading — and its lead narrows as the conversation
+grows.** GLM is the steadier of the two throughout, and uses about twice the
+memory to hold the conversation.
+
+If the model has to share the machine with anything substantial, see
+[SSD streaming](M3_MAX_STREAMING.md), which measures what a 70 GiB weight
+budget costs. The two answers are different: DeepSeek streams well, GLM
+does not stream at all.
 
 ## The numbers
 
@@ -21,12 +26,12 @@ Two speeds matter, and they are not the same thing:
 
 | Conversation so far | DeepSeek reads | DeepSeek writes | GLM reads | GLM writes |
 | --- | ---: | ---: | ---: | ---: |
-| 2,000 words | 251/s | 21.5/s | 173/s | 16.9/s |
-| 8,000 | 233/s | 21.1/s | 160/s | 17.4/s |
-| 16,000 | 212/s | 18.8/s | 149/s | 16.0/s |
-| 32,000 | 182/s | 17.1/s | 138/s | 14.9/s |
-| 49,000 | 167/s | 16.6/s | 138/s | 14.7/s |
-| 65,000 | 156/s | 16.3/s | 135/s | 14.8/s |
+| 2,000 words | 254/s | 22.2/s | 178/s | 17.1/s |
+| 8,000 | 239/s | 21.9/s | 162/s | 17.7/s |
+| 16,000 | 223/s | 20.6/s | 153/s | 16.6/s |
+| 32,000 | 188/s | 18.0/s | 142/s | 15.4/s |
+| 49,000 | 173/s | 17.5/s | 135/s | 15.3/s |
+| 65,000 | 162/s | 17.1/s | 139/s | 15.3/s |
 
 Everything is in tokens per second; a token is roughly ¾ of a word.
 
@@ -36,13 +41,14 @@ Everything is in tokens per second; a token is roughly ¾ of a word.
 
 ## What the shape tells you
 
-**DeepSeek starts further ahead than it finishes.** It is 27% faster on a short
-conversation and only 10% faster on a very long one. DeepSeek loses about a
-quarter of its writing speed as the conversation grows from 2,000 to 65,000
-tokens; GLM loses about an eighth.
+**DeepSeek starts further ahead than it finishes.** Its reading lead falls from
+48% at 8,000 tokens to 17% at 65,000; its writing lead from 30% to 12%. DeepSeek
+loses about a quarter of its writing speed as the conversation grows from 2,000
+to 65,000 tokens; GLM loses about a ninth.
 
-The two curves converge — and past 65,000 tokens they meet. See
-[very long conversations](#very-long-conversations) below.
+The two curves converge but do not meet within this range. See
+[very long conversations](#very-long-conversations) below — with the caveat
+noted there that those measurements are older than these.
 
 **GLM is the more predictable of the two.** Across the long-conversation range
 its speed varies by well under a percent between repeat runs. DeepSeek varies a
@@ -50,8 +56,15 @@ little more. Neither wobbles enough to notice while using them.
 
 ## Very long conversations
 
-Pushing both models to 128,000 tokens — twice the range above — changes the
-answer. DeepSeek's lead does not merely shrink; it disappears.
+> **These figures are older than the rest of this page.** They were taken on
+> build `6289c51` under macOS 26.6.1; everything above was re-measured on
+> `058e5a4` under macOS 27.0.1, which reads 6% and writes 10% faster. The 128K
+> sweeps were not re-run, so **do not compare the two tables directly** — the
+> crossover below may sit at a different context length on the current build.
+> Rerunning them takes about 50 minutes; see `speed-bench/queue_all.sh`.
+
+Pushing both models to 128,000 tokens — twice the range above — changed the
+answer on that build. DeepSeek's lead did not merely shrink; it disappeared.
 
 | Conversation so far | DeepSeek writes | GLM writes | DeepSeek reads | GLM reads |
 | --- | ---: | ---: | ---: | ---: |
@@ -190,6 +203,11 @@ Run each model's sweep **twice back to back and use the second**. The first
 brings the machine to its sustained operating point; the second measures it
 there. Otherwise you measure how cold the laptop happened to be.
 
+The tables above are pass 2 alone. (Figures published here before 2026-10-02
+were the mean of both passes, which quietly folded pass 1's warm-up and its
+cache-churn dips into the result; pass 2 is the sustained number this section
+argues for.)
+
 Raise `DS4_BENCH_SNAPSHOT_MAX_BYTES`. The 1 GiB default is fine for a single
 model, but GLM's per-conversation state crosses it near 39,000 tokens while
 DeepSeek's does not until ~64,000. Past the limit the harness replays the
@@ -213,8 +231,11 @@ quantisations of each, so filenames are important to check.
 | Experts stored as | IQ2_XXS gate/up, Q2_K down | IQ2_XXS gate/up, Q2_K down |
 | Source revision | — | `84c6a6aa9497188e15a635ba793b0f95a79b1033` |
 
-Host: MacBook Pro M3 Max, 40 GPU cores, 128 GiB, macOS 26.6.1, Metal.
-Build: upstream `main` at `6289c51`, Apple clang 21.0.0.
+Host: MacBook Pro M3 Max, 40 GPU cores, 128 GiB, macOS 27.0.1, Metal.
+Build: `058e5a4` (upstream `main` at `6289c51` plus 23 commits), Apple clang.
+Measured 2026-10-02. The 2K-64K tables and charts are from this build; the
+128,000-token section is from `6289c51` under macOS 26.6.1 and is marked as
+such.
 Prompt: `speed-bench/promessi_sposi.txt`. 128 tokens generated per frontier.
 
 The 128,000-token runs used `--ctx-max 131072` and an 8 GiB snapshot budget, a
@@ -241,3 +262,5 @@ every 15 seconds through both long runs).
   almost entirely on memory bandwidth.
 - **Anything about GLM's built-in draft mode.** That is a large enough topic
   to have its own page: [GLM 5.3 MTP](M3_MAX_GLM_MTP.md).
+- **What it costs to leave memory free.** Both models were fully resident here.
+  [SSD streaming](M3_MAX_STREAMING.md) measures a 70 GiB weight budget instead.
