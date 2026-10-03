@@ -6,9 +6,10 @@ set -u
 tag=$1; bindir=$2; ctxmax=$3; gen=$4; shift 4
 cd "$(dirname "$0")/.."
 here=$PWD
+day=${RUN_DAY:-$(date +%m%d)}   # file date tag; RUN_DAY=1003 reproduces old names
 export DS4_BENCH_SNAPSHOT_MAX_BYTES=4294967296
-csv=speed-bench/m3_max_glm53f_q2_1003_${tag}.csv
-log=speed-bench/m3_max_glm53f_q2_1003_${tag}.log
+csv=speed-bench/m3_max_glm53f_q2_${day}_${tag}.csv
+log=speed-bench/m3_max_glm53f_q2_${day}_${tag}.log
 rm -f "$csv"
 echo "=== glm $tag start $(date +%H:%M:%S) bin=$bindir args: $*"
 (cd "$bindir" && ./ds4-bench -m "$here/gguf/GLM-5.3-Flash-Q2.gguf" --ssd-streaming "$@" \
