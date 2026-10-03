@@ -1,3 +1,11 @@
 === glm A_nostatic_preload start 00:35:54 env: DS4_METAL_DISABLE_STREAMING_STATIC_DECODE_MAP=1 DS4_METAL_STREAMING_EXPERT_HOTLIST_PROFILE=1 
 === glm A_nostatic_preload killed after 1 frontier 00:40:18
 === glm A_nostatic_preload exit 143 00:40:19
+=== glm fix_addr_62gb start 01:47:46 bin=/Users/dain/workspace/ds4-glm53-stream args: --ssd-streaming-cache-experts 62GB
+=== glm fix_addr_62gb exit 1 01:47:48
+=== glm fix_addr_62gb start 01:48:15 bin=/Users/dain/workspace/ds4-glm53-stream args: --ssd-streaming-cache-experts 62GB
+=== glm fix_addr_62gb exit 0 01:51:43
+=== glm fix_addr_default start 01:52:14 bin=/Users/dain/workspace/ds4-glm53-stream args: 
+=== glm fix_addr_default exit 0 01:54:44
+=== glm fix_final_62gb start 02:10:20 bin=/Users/dain/workspace/ds4-glm53-stream args: --ssd-streaming-cache-experts 62GB
+=== glm fix_final_62gb exit 0 02:13:47
