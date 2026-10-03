@@ -29,6 +29,7 @@ AXIS = "#c3c2b7"
 
 WIDTH, HEIGHT = 960, 520
 M_LEFT, M_RIGHT, M_TOP, M_BOTTOM = 78, 168, 78, 68
+LABEL_GAP = 34   # vertical room for a direct label: name plus value line
 
 
 def nice_ceil(value):
@@ -77,8 +78,11 @@ def read_series(path, column, scale=1.0, min_ctx=0):
     return sorted(points)
 
 
-def render(series, title, subtitle, y_label, out_path, y_unit=""):
-    """Write one multi-series line chart. series = [(name, [(x, y)])]."""
+def render(series, title, subtitle, y_label, out_path, y_unit="", styles=None):
+    """Write one multi-series line chart. series = [(name, [(x, y)])].
+
+    styles maps a series name to (colour, dashed); unnamed series take the
+    categorical slots in order."""
     series = [s for s in series if s[1]]
     if not series:
         raise SystemExit(f"no data for {out_path}")
@@ -152,30 +156,42 @@ def render(series, title, subtitle, y_label, out_path, y_unit=""):
         f'{M_TOP + plot_h / 2:.0f}) rotate(-90)" text-anchor="middle">'
         f'{html.escape(y_label)}</text>')
 
+    labels = []
     # Series: 2px lines, 8px markers ringed in the surface colour so
     # overlapping points stay separable.
     for idx, (name, pts) in enumerate(series):
-        colour = SERIES_COLORS[idx % len(SERIES_COLORS)]
+        colour, dashed = (styles or {}).get(
+            name, (SERIES_COLORS[idx % len(SERIES_COLORS)], False))
+        dash = ' stroke-dasharray="7 5"' if dashed else ""
         d = " ".join(
             f"{'M' if i == 0 else 'L'}{sx(x):.1f},{sy(y):.1f}"
             for i, (x, y) in enumerate(pts)
         )
         add(f'<path d="{d}" fill="none" stroke="{colour}" stroke-width="2" '
-            f'stroke-linejoin="round" stroke-linecap="round"/>')
+            f'stroke-linejoin="round" stroke-linecap="round"{dash}/>')
         for x, y in pts:
             add(f'<circle cx="{sx(x):.1f}" cy="{sy(y):.1f}" r="4" '
                 f'fill="{colour}" stroke="{SURFACE}" stroke-width="2"/>')
         # Direct label at the series end: identity is never colour-alone.
         lx, ly = pts[-1]
+        labels.append([sx(lx), sy(ly), lx < x_max, colour, name,
+                       f"{ly:,.1f}{y_unit}"])
+
+    # Labels for series ending at the same x are stacked top to bottom with
+    # room for the name and value, so close finishes do not overprint.
+    labels.sort(key=lambda lab: (round(lab[0]), lab[1]))
+    for prev, lab in zip(labels, labels[1:]):
+        if abs(lab[0] - prev[0]) < 1 and lab[1] - prev[1] < LABEL_GAP:
+            lab[1] = prev[1] + LABEL_GAP
+    for x, y, inside, colour, name, end in labels:
         # A series that stops short of the axis end is labelled inside the
         # plot, over other lines, so its label gets a surface-coloured halo.
         halo = (f' stroke="{SURFACE}" stroke-width="4" paint-order="stroke"'
-                if lx < x_max else "")
-        add(f'<text class="slab" x="{sx(lx) + 12:.1f}" y="{sy(ly) + 4:.1f}" '
+                if inside else "")
+        add(f'<text class="slab" x="{x + 12:.1f}" y="{y + 4:.1f}" '
             f'fill="{colour}"{halo}>{html.escape(name)}</text>')
-        end = f"{ly:,.1f}{y_unit}"
-        add(f'<text class="tick" x="{sx(lx) + 12:.1f}" '
-            f'y="{sy(ly) + 20:.1f}"{halo}>{end}</text>')
+        add(f'<text class="tick" x="{x + 12:.1f}" '
+            f'y="{y + 20:.1f}"{halo}>{end}</text>')
 
     add("</svg>")
     Path(out_path).write_text("\n".join(o) + "\n", encoding="utf-8")
@@ -196,6 +212,10 @@ def main():
                     help="omit this run from the KV-cache chart; use for runs "
                          "whose cache is identical to another's, since an "
                          "exactly overlapping line reads as a missing series")
+    ap.add_argument("--like", action="append", default=[], metavar="NAME=OTHER",
+                    help="draw run NAME dashed in run OTHER's colour; use for "
+                         "a second configuration of the same model, so colour "
+                         "keeps meaning the model")
     args = ap.parse_args()
     if not args.run:
         ap.error("at least one --run NAME=CSV is required")
@@ -207,6 +227,25 @@ def main():
         name, path = spec.split("=", 1)
         runs.append((name, path))
 
+    like = {}
+    for spec in args.like:
+        if "=" not in spec:
+            ap.error(f"--like needs NAME=OTHER, got {spec!r}")
+        name, other = spec.split("=", 1)
+        like[name] = other
+    # Colours follow the run, not its position in a chart: slots go to the
+    # runs that are not --like in order, and a --like run borrows its colour.
+    styles = {}
+    own = [n for n, _ in runs if n not in like]
+    if len(own) > len(SERIES_COLORS):
+        ap.error(f"at most {len(SERIES_COLORS)} runs without --like")
+    for i, n in enumerate(own):
+        styles[n] = (SERIES_COLORS[i], False)
+    for n, other in like.items():
+        if other not in styles:
+            ap.error(f"--like {n}={other}: no run named {other!r}")
+        styles[n] = (styles[other][0], True)
+
     out = Path(args.out_dir)
     out.mkdir(parents=True, exist_ok=True)
     suffix = f" — {args.machine}" if args.machine else ""
@@ -216,21 +255,21 @@ def main():
         [(n, read_series(p, "gen_tps", min_ctx=args.min_ctx)) for n, p in runs],
         "Writing speed" + suffix,
         "Tokens produced per second while answering. Higher is better.",
-        "Tokens per second", out / "compare_decode.svg"))
+        "Tokens per second", out / "compare_decode.svg", styles=styles))
 
     written.append(render(
         [(n, read_series(p, "prefill_tps", min_ctx=args.min_ctx)) for n, p in runs],
         "Reading speed" + suffix,
         "Tokens of your prompt digested per second before the answer starts. "
         "Higher is better.",
-        "Tokens per second", out / "compare_prefill.svg"))
+        "Tokens per second", out / "compare_prefill.svg", styles=styles))
 
     kv_runs = [(n, p) for n, p in runs if n not in args.kv_skip]
     written.append(render(
         [(n, read_series(p, "kvcache_bytes", 1 / 2**30)) for n, p in kv_runs],
         "Memory used to remember the conversation" + suffix,
         "Extra memory held on top of the model itself. Lower is better.",
-        "Gigabytes", out / "compare_kvcache.svg", y_unit=" GB"))
+        "Gigabytes", out / "compare_kvcache.svg", y_unit=" GB", styles=styles))
 
     for path in written:
         print(path)

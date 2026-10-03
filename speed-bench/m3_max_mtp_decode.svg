@@ -75,8 +75,6 @@ text{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,san
 <circle cx="747.4" cy="166.8" r="4" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"/>
 <circle cx="769.7" cy="163.1" r="4" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"/>
 <circle cx="792.0" cy="166.5" r="4" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"/>
-<text class="slab" x="804.0" y="170.5" fill="#2a78d6">GLM 5.3 Flash</text>
-<text class="tick" x="804.0" y="186.5">15.3</text>
 <path d="M100.3,236.2 L122.6,161.8 L144.9,243.5 L167.2,254.2 L189.6,227.8 L211.9,270.6 L234.2,278.7 L256.5,263.3 L278.8,275.5 L301.1,309.3 L323.4,285.0 L345.8,270.4 L368.1,298.7 L390.4,271.7 L412.7,278.5 L435.0,287.6 L457.3,294.5 L479.6,291.9 L501.9,196.0 L524.2,290.1 L546.6,283.3 L568.9,262.2 L591.2,229.5 L613.5,302.2 L635.8,297.7 L658.1,296.4 L680.4,310.4 L702.8,302.4 L725.1,245.4 L747.4,308.4 L769.7,260.0 L792.0,189.1" fill="none" stroke="#eb6834" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
 <circle cx="100.3" cy="236.2" r="4" fill="#eb6834" stroke="#fcfcfb" stroke-width="2"/>
 <circle cx="122.6" cy="161.8" r="4" fill="#eb6834" stroke="#fcfcfb" stroke-width="2"/>
@@ -110,6 +108,8 @@ text{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,san
 <circle cx="747.4" cy="308.4" r="4" fill="#eb6834" stroke="#fcfcfb" stroke-width="2"/>
 <circle cx="769.7" cy="260.0" r="4" fill="#eb6834" stroke="#fcfcfb" stroke-width="2"/>
 <circle cx="792.0" cy="189.1" r="4" fill="#eb6834" stroke="#fcfcfb" stroke-width="2"/>
-<text class="slab" x="804.0" y="193.1" fill="#eb6834">GLM 5.3 Flash + MTP</text>
-<text class="tick" x="804.0" y="209.1">14.1</text>
+<text class="slab" x="804.0" y="170.5" fill="#2a78d6">GLM 5.3 Flash</text>
+<text class="tick" x="804.0" y="186.5">15.3</text>
+<text class="slab" x="804.0" y="204.5" fill="#eb6834">GLM 5.3 Flash + MTP</text>
+<text class="tick" x="804.0" y="220.5">14.1</text>
 </svg>
