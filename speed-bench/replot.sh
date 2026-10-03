@@ -50,14 +50,14 @@ plot m3_max_mtp \
 
 # 4. New: resident (2K-64K) vs 62 GiB SSD streaming (2K-32K), both models.
 #    Colour is the model, dashes mean streamed. GLM streamed is the fixed build
-#    from fix/glm53-metal-iq2-q2k-stream-cache, after a 2K-4K warm-up run.
+#    from fix/glm53-metal-iq2-q2k-stream-cache, pass 2 of two back to back.
 #    Upstream GLM (m3_max_glm53f_q2_ssd70_pass2.csv) is left out: it ignores
 #    the budget and maps the whole file, so it is not streaming.
 plot m3_max_streaming \
   --run "DeepSeek resident=m3_max_ds4f_q2_1002_resident_pass2.csv" \
   --run "GLM resident=m3_max_glm53f_q2_1002_resident_pass2.csv" \
   --run "DeepSeek streamed=m3_max_ds4f_q2_ssd70_apps24_pass2.csv" \
-  --run "GLM streamed (fix)=m3_max_glm53f_q2_1004_fix_32k.csv" \
+  --run "GLM streamed (fix)=m3_max_glm53f_q2_1004_fix_32k_p2.csv" \
   --like "DeepSeek streamed=DeepSeek resident" \
   --like "GLM streamed (fix)=GLM resident"
 

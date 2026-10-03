@@ -123,27 +123,27 @@ text{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,san
 <circle cx="390.4" cy="281.0" r="4" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"/>
 <circle cx="412.7" cy="285.2" r="4" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"/>
 <circle cx="435.0" cy="288.4" r="4" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"/>
-<path d="M100.3,299.5 L122.6,278.1 L144.9,284.0 L167.2,269.3 L189.6,264.2 L211.9,285.9 L234.2,307.1 L256.5,320.2 L278.8,321.3 L301.1,321.1 L323.4,309.4 L345.8,305.8 L368.1,304.2 L390.4,316.5 L412.7,317.6 L435.0,317.7" fill="none" stroke="#eb6834" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" stroke-dasharray="7 5"/>
-<circle cx="100.3" cy="299.5" r="4" fill="#eb6834" stroke="#fcfcfb" stroke-width="2"/>
-<circle cx="122.6" cy="278.1" r="4" fill="#eb6834" stroke="#fcfcfb" stroke-width="2"/>
-<circle cx="144.9" cy="284.0" r="4" fill="#eb6834" stroke="#fcfcfb" stroke-width="2"/>
-<circle cx="167.2" cy="269.3" r="4" fill="#eb6834" stroke="#fcfcfb" stroke-width="2"/>
-<circle cx="189.6" cy="264.2" r="4" fill="#eb6834" stroke="#fcfcfb" stroke-width="2"/>
-<circle cx="211.9" cy="285.9" r="4" fill="#eb6834" stroke="#fcfcfb" stroke-width="2"/>
-<circle cx="234.2" cy="307.1" r="4" fill="#eb6834" stroke="#fcfcfb" stroke-width="2"/>
-<circle cx="256.5" cy="320.2" r="4" fill="#eb6834" stroke="#fcfcfb" stroke-width="2"/>
-<circle cx="278.8" cy="321.3" r="4" fill="#eb6834" stroke="#fcfcfb" stroke-width="2"/>
-<circle cx="301.1" cy="321.1" r="4" fill="#eb6834" stroke="#fcfcfb" stroke-width="2"/>
-<circle cx="323.4" cy="309.4" r="4" fill="#eb6834" stroke="#fcfcfb" stroke-width="2"/>
-<circle cx="345.8" cy="305.8" r="4" fill="#eb6834" stroke="#fcfcfb" stroke-width="2"/>
-<circle cx="368.1" cy="304.2" r="4" fill="#eb6834" stroke="#fcfcfb" stroke-width="2"/>
-<circle cx="390.4" cy="316.5" r="4" fill="#eb6834" stroke="#fcfcfb" stroke-width="2"/>
-<circle cx="412.7" cy="317.6" r="4" fill="#eb6834" stroke="#fcfcfb" stroke-width="2"/>
-<circle cx="435.0" cy="317.7" r="4" fill="#eb6834" stroke="#fcfcfb" stroke-width="2"/>
+<path d="M100.3,315.2 L122.6,316.1 L144.9,319.5 L167.2,324.0 L189.6,319.3 L211.9,299.4 L234.2,296.8 L256.5,302.8 L278.8,318.2 L301.1,298.2 L323.4,308.1 L345.8,308.0 L368.1,340.3 L390.4,331.3 L412.7,326.6 L435.0,324.6" fill="none" stroke="#eb6834" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" stroke-dasharray="7 5"/>
+<circle cx="100.3" cy="315.2" r="4" fill="#eb6834" stroke="#fcfcfb" stroke-width="2"/>
+<circle cx="122.6" cy="316.1" r="4" fill="#eb6834" stroke="#fcfcfb" stroke-width="2"/>
+<circle cx="144.9" cy="319.5" r="4" fill="#eb6834" stroke="#fcfcfb" stroke-width="2"/>
+<circle cx="167.2" cy="324.0" r="4" fill="#eb6834" stroke="#fcfcfb" stroke-width="2"/>
+<circle cx="189.6" cy="319.3" r="4" fill="#eb6834" stroke="#fcfcfb" stroke-width="2"/>
+<circle cx="211.9" cy="299.4" r="4" fill="#eb6834" stroke="#fcfcfb" stroke-width="2"/>
+<circle cx="234.2" cy="296.8" r="4" fill="#eb6834" stroke="#fcfcfb" stroke-width="2"/>
+<circle cx="256.5" cy="302.8" r="4" fill="#eb6834" stroke="#fcfcfb" stroke-width="2"/>
+<circle cx="278.8" cy="318.2" r="4" fill="#eb6834" stroke="#fcfcfb" stroke-width="2"/>
+<circle cx="301.1" cy="298.2" r="4" fill="#eb6834" stroke="#fcfcfb" stroke-width="2"/>
+<circle cx="323.4" cy="308.1" r="4" fill="#eb6834" stroke="#fcfcfb" stroke-width="2"/>
+<circle cx="345.8" cy="308.0" r="4" fill="#eb6834" stroke="#fcfcfb" stroke-width="2"/>
+<circle cx="368.1" cy="340.3" r="4" fill="#eb6834" stroke="#fcfcfb" stroke-width="2"/>
+<circle cx="390.4" cy="331.3" r="4" fill="#eb6834" stroke="#fcfcfb" stroke-width="2"/>
+<circle cx="412.7" cy="326.6" r="4" fill="#eb6834" stroke="#fcfcfb" stroke-width="2"/>
+<circle cx="435.0" cy="324.6" r="4" fill="#eb6834" stroke="#fcfcfb" stroke-width="2"/>
 <text class="slab" x="447.0" y="292.4" fill="#2a78d6" stroke="#fcfcfb" stroke-width="4" paint-order="stroke">DeepSeek streamed</text>
 <text class="tick" x="447.0" y="308.4" stroke="#fcfcfb" stroke-width="4" paint-order="stroke">131.2</text>
-<text class="slab" x="447.0" y="326.4" fill="#eb6834" stroke="#fcfcfb" stroke-width="4" paint-order="stroke">GLM streamed (fix)</text>
-<text class="tick" x="447.0" y="342.4" stroke="#fcfcfb" stroke-width="4" paint-order="stroke">107.8</text>
+<text class="slab" x="447.0" y="328.6" fill="#eb6834" stroke="#fcfcfb" stroke-width="4" paint-order="stroke">GLM streamed (fix)</text>
+<text class="tick" x="447.0" y="344.6" stroke="#fcfcfb" stroke-width="4" paint-order="stroke">102.2</text>
 <text class="slab" x="804.0" y="254.6" fill="#2a78d6">DeepSeek resident</text>
 <text class="tick" x="804.0" y="270.6">161.5</text>
 <text class="slab" x="804.0" y="288.6" fill="#eb6834">GLM resident</text>

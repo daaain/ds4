@@ -177,31 +177,31 @@ With the same command, the plan becomes:
     resident model 8.24 GiB + expert cache 58.20 GiB + prefill reserve 3.80 GiB
     = 73.26 GiB planned
 
-Wired memory peaked at 74.7 GiB during the 32K sweep, and no swap was added.
+Wired memory peaked at 75.0 GiB during the 32K sweeps, and no swap was added.
 
-The same sweep as DeepSeek's, 2K–32K, one pass after a short 2K–4K warm-up run,
+The same sweep as DeepSeek's, 2K–32K, pass 2 of two back-to-back passes,
 against GLM's resident pass 2 from the same machine:
 
 | Conversation so far | resident | streamed | reading | writing |
 | --- | ---: | ---: | ---: | ---: |
-| 2,000 | 178/17.1 | 122/11.9 | −31% | −30% |
-| 8,000 | 162/17.6 | 147/14.0 | −10% | −21% |
-| 16,000 | 153/16.6 | 106/11.9 | −31% | −28% |
-| 24,000 | 145/15.6 | 117/13.0 | −19% | −16% |
-| 32,000 | 142/15.4 | 108/12.9 | −24% | **−16%** |
+| 2,000 | 178/17.1 | 110/11.2 | −38% | −34% |
+| 8,000 | 162/17.6 | 103/12.1 | −37% | −31% |
+| 16,000 | 153/16.6 | 120/13.2 | −22% | −20% |
+| 24,000 | 145/15.6 | 116/12.7 | −20% | −18% |
+| 32,000 | 142/15.4 | 102/12.5 | −28% | **−19%** |
 
 Writing is the steady rate, as in the DeepSeek table. Averaged over 16K–32K,
 next to DeepSeek's figures from above:
 
 | | GLM resident | GLM streamed | DeepSeek resident | DeepSeek streamed |
 | --- | ---: | ---: | ---: | ---: |
-| First token after a prompt | 55 ms | **171 ms** | 42 ms | **1,311 ms** |
-| Sustained writing | 15.8/s | 12.7/s (−20%) | 19.1/s | 16.9/s (−12%) |
-| Reading | 146/s | 110/s (−25%) | 203/s | 137/s (−33%) |
+| First token after a prompt | 55 ms | **172 ms** | 42 ms | **1,311 ms** |
+| Sustained writing | 15.8/s | 12.8/s (−19%) | 19.1/s | 16.9/s (−12%) |
+| Reading | 146/s | 108/s (−26%) | 203/s | 137/s (−33%) |
 
 **GLM's penalties are milder on reading and harsher on writing than
 DeepSeek's.** DeepSeek's writing penalty fades to 5% by 32,000 tokens; GLM's
-levels off at about 16%. In absolute terms, streamed GLM reads and writes
+narrows from about a third to 18–20% and stays there. In absolute terms, streamed GLM reads and writes
 slower than streamed DeepSeek throughout, just as it does resident.
 
 **The first token is where the fixed GLM build clearly does better.** It
@@ -212,14 +212,16 @@ decoding starts from a warm cache. Upstream DeepSeek does not do that. The two
 were built from different trees, though, so treat this as a lead rather than a
 like-for-like result.
 
-**One pass, so read the middle of the curve with care.** Reading dips to
-105/s between 16,000 and 20,000 tokens and recovers to 117 by 24,000. That
-looks like the expert-cache churn DeepSeek's first passes showed in the same
-region (see [Reproducing this](#reproducing-this)), which is why its table
-quotes pass 2. A second GLM pass has not been run. Over 2K–8K, this sweep
-(122–147 reading) agrees with the first fixed-build sweep on 2026-10-03
-(122–138). A later run that day measured 94–98, straight after a series of
-back-to-back benchmarks that were themselves varying by up to 25%.
+**Trust the averages more than any single point.** Three full sweeps were run:
+one after a short warm-up, then two back to back. Over 16K–32K they agree
+closely — reading 103–110/s, writing 12.3–12.8/s, first token 171–172 ms — but
+individual points move by up to 30% between passes, with dips of 90–105/s
+reading at different places each time (14K–20K, 18K–20K, 26K–28K). That looks
+like the expert-cache churn DeepSeek's first passes showed (see
+[Reproducing this](#reproducing-this)), except that for GLM it does not settle
+by pass 2 — plausibly because, with eight experts a token and a cache holding
+about two-thirds of the expert weights, prefill keeps evicting what the next
+chunk needs.
 
 ### A long prompt, and follow-up messages
 
@@ -297,8 +299,8 @@ binaries from inside that worktree, so its Metal shaders are the ones used:
 
 ```sh
 W=../ds4-glm53-stream   # worktree of fix/glm53-metal-iq2-q2k-stream-cache, built
-speed-bench/run_glm_sweep.sh      warmup $W 4096 32 --ssd-streaming-cache-experts 62GB
-speed-bench/run_glm_sweep.sh      sweep  $W 32768 128 --ssd-streaming-cache-experts 62GB
+speed-bench/run_glm_sweep.sh      sweep_p1 $W 32768 128 --ssd-streaming-cache-experts 62GB
+speed-bench/run_glm_sweep.sh      sweep_p2 $W 32768 128 --ssd-streaming-cache-experts 62GB
 speed-bench/run_glm_longprompt.sh long16k $W 16384 --ssd-streaming-cache-experts 62GB
 speed-bench/run_glm_appends.sh    appends $W 128 4 --ssd-streaming-cache-experts 62GB
 speed-bench/run_glm_sweep.sh      sim64  $W 4096 32 --ssd-streaming-cache-experts 28GB \
@@ -320,16 +322,18 @@ filenames and revisions.
 - DeepSeek, and upstream GLM with the static map: build `058e5a4`, Apple clang,
   2026-10-02.
 - GLM fixed, and upstream GLM's per-layer fallback: the fix branch at `4bd088c`
-  and its base `0aaea5a`. The 2K–32K sweep is
-  `speed-bench/m3_max_glm53f_q2_1004_fix_32k.csv` (2026-10-04, after
-  `1004_fix_warmup`), with memory in `m3_max_1004_memory.csv`. Everything else
+  and its base `0aaea5a`. The 2K–32K figures are
+  `speed-bench/m3_max_glm53f_q2_1004_fix_32k_p2.csv` (2026-10-04), pass 2 after
+  `fix_32k_p1`; the earlier single pass is `fix_32k`, after `fix_warmup`.
+  Memory is in `m3_max_1004_memory.csv`. Everything else
   is `speed-bench/m3_max_glm53f_q2_1003_*` (2026-10-03); the earlier 2K–8K
   sweeps are `r2warm_62gb` and the lower `fix_62gb_check`.
 
 ## What this does not tell you
 
-- **A second pass of the fixed GLM sweep.** DeepSeek's figures are pass 2 of
-  two; GLM's 2K–32K figures are a single pass after a short warm-up.
+- **Why streamed GLM's curve stays bumpy in pass 2.** The cache-churn
+  explanation above fits, but has not been confirmed with the cache's hit
+  counters.
 - **Whether the fix will be merged**, or in what form. Everything about fixed
   GLM here describes an unmerged branch.
 - **A real 64 or 96 GB Mac.** The smaller-Mac figures lock memory on a 128 GB
