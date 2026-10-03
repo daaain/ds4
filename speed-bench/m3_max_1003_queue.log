@@ -9,3 +9,9 @@
 === glm fix_addr_default exit 0 01:54:44
 === glm fix_final_62gb start 02:10:20 bin=/Users/dain/workspace/ds4-glm53-stream args: --ssd-streaming-cache-experts 62GB
 === glm fix_final_62gb exit 0 02:13:47
+=== glm iostat_62gb start 02:19:58 bin=/Users/dain/workspace/ds4-glm53-stream args: --ssd-streaming-cache-experts 62GB
+=== glm iostat_62gb exit 0 02:22:27
+=== glm noseed_62gb start 02:26:01 bin=/Users/dain/workspace/ds4-glm53-stream args: --ssd-streaming-cache-experts 62GB
+=== glm noseed_62gb exit 0 02:28:20
+=== glm cache40gb start 02:30:30 bin=/Users/dain/workspace/ds4-glm53-stream args: --ssd-streaming-cache-experts 40GB
+=== glm cache40gb exit 0 02:33:19

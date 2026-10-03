@@ -1,0 +1,152 @@
+ds4: Metal device Apple M3 Max, 128.00 GiB RAM
+ds4: Metal 4 tensor API disabled for pre-M5/pre-A19 devices
+ds4: drift-patch flags hc_stable=on norm_unify=on kv_raw_f32=off rope_exp2_log2=off math_safe=off tensor_matmul=off
+ds4: Metal SSD streaming mode enabled; full model residency and warmup are skipped
+ds4: GLM SSD streaming full resident layers: 0 (auto selected 0 layers)
+ds4: metal SSD streaming cache target 62.00 GiB; effective 62.00 GiB = 3.80 GiB prefill headroom + 58.20 GiB dynamic cache (8829 experts, 6.75 MiB each)
+ds4: GLM SSD streaming decode map: global 8.24 GiB (6.12 GiB beyond the active layer window)
+ds4: Metal SSD static weights locked 8.24 GiB; pageable 0.00 GiB
+ds4: SSD streaming initial metal model map (1 spans, 0.63 GiB tensor span)
+ds4: metal backend initialized for graph diagnostics
+ds4: memory: KV 0.07 GiB (raw 0.00 + compressed 0.07) + buffers 2.93 GiB + resident model 8.24 GiB + expert cache 58.20 GiB + prefill expert reserve 3.80 GiB = 73.23 GiB planned
+ds4: memory detail: ctx=6273 prefill_cap=2048 raw_kv_rows=0 compressed_kv_rows=6273 backend=metal
+ds4-bench: context buffers 3068.27 MiB (ctx=6273, backend=metal, prefill_chunk=2048, raw_kv_rows=0, compressed_kv_rows=6273)
+ds4: GLM SSD streaming decode map: global 8.24 GiB (0.22 GiB beyond the active layer window)
+ds4: GLM graph using compact DSA KV only; expanded full-attention KV cache is skipped
+ds4: GLM graph allocating compact DSA cache: rows=6273 logical_ctx=6273 kv_layers=45 indexer_layers=11 f16 0.07 GiB
+ds4: GLM compact indexed prefill chunk=2048 score_rows=2048 score_scratch=12.26 MiB
+ds4: Metal streaming prefill layer pread layer=0 tokens=2048 threads=8 ranges=24 bytes=0.88 GiB wait=11.685 ms thread=11.638 ms read=0.88 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=1 tokens=2048 threads=8 ranges=24 bytes=0.26 GiB wait=0.042 ms thread=3.319 ms read=0.26 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=2 tokens=2048 threads=8 ranges=24 bytes=0.26 GiB wait=0.047 ms thread=10.073 ms read=0.26 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=3 tokens=2048 threads=8 ranges=24 bytes=2.06 GiB wait=175.431 ms thread=303.015 ms read=2.06 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=4 tokens=2048 threads=8 ranges=24 bytes=2.03 GiB wait=0.027 ms thread=315.842 ms read=2.03 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=5 tokens=2048 threads=8 ranges=24 bytes=2.03 GiB wait=89.704 ms thread=322.338 ms read=2.03 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=6 tokens=2048 threads=8 ranges=24 bytes=2.03 GiB wait=88.451 ms thread=322.336 ms read=2.03 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=7 tokens=2048 threads=8 ranges=24 bytes=2.06 GiB wait=91.812 ms thread=326.507 ms read=2.06 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=8 tokens=2048 threads=8 ranges=24 bytes=2.03 GiB wait=0.028 ms thread=324.545 ms read=2.03 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=9 tokens=2048 threads=8 ranges=24 bytes=2.03 GiB wait=80.462 ms thread=326.960 ms read=2.03 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=10 tokens=2048 threads=8 ranges=24 bytes=2.03 GiB wait=87.968 ms thread=327.321 ms read=2.03 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=11 tokens=2048 threads=8 ranges=24 bytes=2.06 GiB wait=94.337 ms thread=329.430 ms read=2.06 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=12 tokens=2048 threads=8 ranges=24 bytes=2.03 GiB wait=0.041 ms thread=328.169 ms read=2.03 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=13 tokens=2048 threads=8 ranges=24 bytes=2.03 GiB wait=0.034 ms thread=323.231 ms read=2.03 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=14 tokens=2048 threads=8 ranges=24 bytes=2.03 GiB wait=75.911 ms thread=325.135 ms read=2.03 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=15 tokens=2048 threads=8 ranges=24 bytes=2.06 GiB wait=88.576 ms thread=331.637 ms read=2.06 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=16 tokens=2048 threads=8 ranges=24 bytes=2.03 GiB wait=0.036 ms thread=368.316 ms read=2.03 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=17 tokens=2048 threads=8 ranges=24 bytes=2.03 GiB wait=87.936 ms thread=359.501 ms read=2.03 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=18 tokens=2048 threads=8 ranges=24 bytes=2.03 GiB wait=0.025 ms thread=872.039 ms read=2.03 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=19 tokens=2048 threads=8 ranges=24 bytes=2.06 GiB wait=106.528 ms thread=429.923 ms read=2.06 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=20 tokens=2048 threads=8 ranges=24 bytes=2.03 GiB wait=0.033 ms thread=358.458 ms read=2.03 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=21 tokens=2048 threads=8 ranges=24 bytes=2.03 GiB wait=41.272 ms thread=361.040 ms read=2.03 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=22 tokens=2048 threads=8 ranges=24 bytes=2.03 GiB wait=0.032 ms thread=475.608 ms read=2.03 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=23 tokens=2048 threads=8 ranges=24 bytes=2.06 GiB wait=172.735 ms thread=453.652 ms read=2.06 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=24 tokens=2048 threads=8 ranges=24 bytes=2.03 GiB wait=0.040 ms thread=373.793 ms read=2.03 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=25 tokens=2048 threads=8 ranges=24 bytes=2.03 GiB wait=76.241 ms thread=357.041 ms read=2.03 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=26 tokens=2048 threads=8 ranges=24 bytes=2.03 GiB wait=61.609 ms thread=352.344 ms read=2.03 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=27 tokens=2048 threads=8 ranges=24 bytes=2.06 GiB wait=0.079 ms thread=398.123 ms read=2.06 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=28 tokens=2048 threads=8 ranges=24 bytes=2.03 GiB wait=0.036 ms thread=372.981 ms read=2.03 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=29 tokens=2048 threads=8 ranges=24 bytes=2.03 GiB wait=75.692 ms thread=356.741 ms read=2.03 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=30 tokens=2048 threads=8 ranges=24 bytes=2.03 GiB wait=62.751 ms thread=353.107 ms read=2.03 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=31 tokens=2048 threads=8 ranges=24 bytes=2.06 GiB wait=61.549 ms thread=360.125 ms read=2.06 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=32 tokens=2048 threads=8 ranges=24 bytes=2.03 GiB wait=0.126 ms thread=371.778 ms read=2.03 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=33 tokens=2048 threads=8 ranges=24 bytes=2.03 GiB wait=118.618 ms thread=430.959 ms read=2.03 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=34 tokens=2048 threads=8 ranges=24 bytes=2.03 GiB wait=97.377 ms thread=412.885 ms read=2.03 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=35 tokens=2048 threads=8 ranges=24 bytes=2.06 GiB wait=92.115 ms thread=397.063 ms read=2.06 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=36 tokens=2048 threads=8 ranges=24 bytes=2.03 GiB wait=0.042 ms thread=362.986 ms read=2.03 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=37 tokens=2048 threads=8 ranges=24 bytes=2.03 GiB wait=0.028 ms thread=479.381 ms read=2.03 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=38 tokens=2048 threads=8 ranges=24 bytes=2.03 GiB wait=73.720 ms thread=359.724 ms read=2.03 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=39 tokens=2048 threads=8 ranges=24 bytes=2.06 GiB wait=143.777 ms thread=430.408 ms read=2.06 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=40 tokens=2048 threads=8 ranges=24 bytes=2.03 GiB wait=0.033 ms thread=352.421 ms read=2.03 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=41 tokens=2048 threads=8 ranges=24 bytes=2.03 GiB wait=0.071 ms thread=367.254 ms read=2.03 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=42 tokens=2048 threads=8 ranges=24 bytes=2.03 GiB wait=96.379 ms thread=367.503 ms read=2.03 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=43 tokens=2048 threads=8 ranges=24 bytes=2.06 GiB wait=78.928 ms thread=350.306 ms read=2.06 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=44 tokens=2048 threads=8 ranges=24 bytes=2.03 GiB wait=0.045 ms thread=351.335 ms read=2.03 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=0 tokens=2048 threads=8 ranges=24 bytes=0.88 GiB wait=12.185 ms thread=12.178 ms read=0.88 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=1 tokens=2048 threads=8 ranges=24 bytes=0.26 GiB wait=0.036 ms thread=3.746 ms read=0.26 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=2 tokens=2048 threads=8 ranges=24 bytes=0.26 GiB wait=0.034 ms thread=5.161 ms read=0.26 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=3 tokens=2048 threads=8 ranges=24 bytes=2.06 GiB wait=115.127 ms thread=239.826 ms read=2.06 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=4 tokens=2048 threads=8 ranges=24 bytes=2.03 GiB wait=0.058 ms thread=264.144 ms read=2.03 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=5 tokens=2048 threads=8 ranges=24 bytes=2.03 GiB wait=55.748 ms thread=309.328 ms read=2.03 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=6 tokens=2048 threads=8 ranges=24 bytes=2.03 GiB wait=106.740 ms thread=366.640 ms read=2.03 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=7 tokens=2048 threads=8 ranges=24 bytes=2.06 GiB wait=88.664 ms thread=351.073 ms read=2.06 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=8 tokens=2048 threads=8 ranges=24 bytes=2.03 GiB wait=0.085 ms thread=331.061 ms read=2.03 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=9 tokens=2048 threads=8 ranges=24 bytes=2.03 GiB wait=90.224 ms thread=359.811 ms read=2.03 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=10 tokens=2048 threads=8 ranges=24 bytes=2.03 GiB wait=76.215 ms thread=361.761 ms read=2.03 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=11 tokens=2048 threads=8 ranges=24 bytes=2.06 GiB wait=87.869 ms thread=359.910 ms read=2.06 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=12 tokens=2048 threads=8 ranges=24 bytes=2.03 GiB wait=0.069 ms thread=767.564 ms read=2.03 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=13 tokens=2048 threads=8 ranges=24 bytes=2.03 GiB wait=122.560 ms thread=367.602 ms read=2.03 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=14 tokens=2048 threads=8 ranges=24 bytes=2.03 GiB wait=158.581 ms thread=425.753 ms read=2.03 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=15 tokens=2048 threads=8 ranges=24 bytes=2.06 GiB wait=92.632 ms thread=359.458 ms read=2.06 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=16 tokens=2048 threads=8 ranges=24 bytes=2.03 GiB wait=0.034 ms thread=358.460 ms read=2.03 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=17 tokens=2048 threads=8 ranges=24 bytes=2.03 GiB wait=115.755 ms thread=362.290 ms read=2.03 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=18 tokens=2048 threads=8 ranges=24 bytes=2.03 GiB wait=100.626 ms thread=356.685 ms read=2.03 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=19 tokens=2048 threads=8 ranges=24 bytes=2.06 GiB wait=109.301 ms thread=354.960 ms read=2.06 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=20 tokens=2048 threads=8 ranges=24 bytes=2.03 GiB wait=0.063 ms thread=413.033 ms read=2.03 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=21 tokens=2048 threads=8 ranges=24 bytes=2.03 GiB wait=154.772 ms thread=413.848 ms read=2.03 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=22 tokens=2048 threads=8 ranges=24 bytes=2.03 GiB wait=110.432 ms thread=394.501 ms read=2.03 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=23 tokens=2048 threads=8 ranges=24 bytes=2.06 GiB wait=65.854 ms thread=387.098 ms read=2.06 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=24 tokens=2048 threads=8 ranges=24 bytes=2.03 GiB wait=0.053 ms thread=367.281 ms read=2.03 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=25 tokens=2048 threads=8 ranges=24 bytes=2.03 GiB wait=99.651 ms thread=371.173 ms read=2.03 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=26 tokens=2048 threads=8 ranges=24 bytes=2.03 GiB wait=97.476 ms thread=387.445 ms read=2.03 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=27 tokens=2048 threads=8 ranges=24 bytes=2.06 GiB wait=113.553 ms thread=385.959 ms read=2.06 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=28 tokens=2048 threads=8 ranges=24 bytes=2.03 GiB wait=0.071 ms thread=397.254 ms read=2.03 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=29 tokens=2048 threads=8 ranges=24 bytes=2.03 GiB wait=168.881 ms thread=443.152 ms read=2.03 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=30 tokens=2048 threads=8 ranges=24 bytes=2.03 GiB wait=111.795 ms thread=381.963 ms read=2.03 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=31 tokens=2048 threads=8 ranges=24 bytes=2.06 GiB wait=94.592 ms thread=379.506 ms read=2.06 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=32 tokens=2048 threads=8 ranges=24 bytes=2.03 GiB wait=0.067 ms thread=363.010 ms read=2.03 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=33 tokens=2048 threads=8 ranges=24 bytes=2.03 GiB wait=86.054 ms thread=367.731 ms read=2.03 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=34 tokens=2048 threads=8 ranges=24 bytes=2.03 GiB wait=102.864 ms thread=363.749 ms read=2.03 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=35 tokens=2048 threads=8 ranges=24 bytes=2.06 GiB wait=107.240 ms thread=365.014 ms read=2.06 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=36 tokens=2048 threads=8 ranges=24 bytes=2.03 GiB wait=0.057 ms thread=410.388 ms read=2.03 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=37 tokens=2048 threads=8 ranges=24 bytes=2.03 GiB wait=116.705 ms thread=370.888 ms read=2.03 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=38 tokens=2048 threads=8 ranges=24 bytes=2.03 GiB wait=102.222 ms thread=367.194 ms read=2.03 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=39 tokens=2048 threads=8 ranges=24 bytes=2.06 GiB wait=161.184 ms thread=432.643 ms read=2.06 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=40 tokens=2048 threads=8 ranges=24 bytes=2.03 GiB wait=0.057 ms thread=369.828 ms read=2.03 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=41 tokens=2048 threads=8 ranges=24 bytes=2.03 GiB wait=69.885 ms thread=372.697 ms read=2.03 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=42 tokens=2048 threads=8 ranges=24 bytes=2.03 GiB wait=97.390 ms thread=368.230 ms read=2.03 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=43 tokens=2048 threads=8 ranges=24 bytes=2.06 GiB wait=243.709 ms thread=497.763 ms read=2.06 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=44 tokens=2048 threads=8 ranges=24 bytes=2.03 GiB wait=0.055 ms thread=395.781 ms read=2.03 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=0 tokens=2048 threads=8 ranges=24 bytes=0.88 GiB wait=11.993 ms thread=11.973 ms read=0.88 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=1 tokens=2048 threads=8 ranges=24 bytes=0.26 GiB wait=0.029 ms thread=3.655 ms read=0.26 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=2 tokens=2048 threads=8 ranges=24 bytes=0.26 GiB wait=0.041 ms thread=4.768 ms read=0.26 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=3 tokens=2048 threads=8 ranges=24 bytes=2.06 GiB wait=178.485 ms thread=302.771 ms read=2.06 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=4 tokens=2048 threads=8 ranges=24 bytes=2.03 GiB wait=0.056 ms thread=359.332 ms read=2.03 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=5 tokens=2048 threads=8 ranges=24 bytes=2.03 GiB wait=0.084 ms thread=390.215 ms read=2.03 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=6 tokens=2048 threads=8 ranges=24 bytes=2.03 GiB wait=0.062 ms thread=402.427 ms read=2.03 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=7 tokens=2048 threads=8 ranges=24 bytes=2.06 GiB wait=62.591 ms thread=357.520 ms read=2.06 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=8 tokens=2048 threads=8 ranges=24 bytes=2.03 GiB wait=0.044 ms thread=356.990 ms read=2.03 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=9 tokens=2048 threads=8 ranges=24 bytes=2.03 GiB wait=0.054 ms thread=364.292 ms read=2.03 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=10 tokens=2048 threads=8 ranges=24 bytes=2.03 GiB wait=0.034 ms thread=385.555 ms read=2.03 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=11 tokens=2048 threads=8 ranges=24 bytes=2.06 GiB wait=159.777 ms thread=425.801 ms read=2.06 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=12 tokens=2048 threads=8 ranges=24 bytes=2.03 GiB wait=0.045 ms thread=391.954 ms read=2.03 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=13 tokens=2048 threads=8 ranges=24 bytes=2.03 GiB wait=216.878 ms thread=480.415 ms read=2.03 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=14 tokens=2048 threads=8 ranges=24 bytes=2.03 GiB wait=109.817 ms thread=373.048 ms read=2.03 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=15 tokens=2048 threads=8 ranges=24 bytes=2.06 GiB wait=0.045 ms thread=464.952 ms read=2.06 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=16 tokens=2048 threads=8 ranges=24 bytes=2.03 GiB wait=0.036 ms thread=384.381 ms read=2.03 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=17 tokens=2048 threads=8 ranges=24 bytes=2.03 GiB wait=0.033 ms thread=380.228 ms read=2.03 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=18 tokens=2048 threads=8 ranges=24 bytes=2.03 GiB wait=144.994 ms thread=397.416 ms read=2.03 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=19 tokens=2048 threads=8 ranges=24 bytes=2.06 GiB wait=0.025 ms thread=379.608 ms read=2.06 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=20 tokens=2048 threads=8 ranges=24 bytes=2.03 GiB wait=0.202 ms thread=358.321 ms read=2.03 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=21 tokens=2048 threads=8 ranges=24 bytes=2.03 GiB wait=64.837 ms thread=360.625 ms read=2.03 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=22 tokens=2048 threads=8 ranges=24 bytes=2.03 GiB wait=0.039 ms thread=416.841 ms read=2.03 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=23 tokens=2048 threads=8 ranges=24 bytes=2.06 GiB wait=6.145 ms thread=404.886 ms read=2.06 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=24 tokens=2048 threads=8 ranges=24 bytes=2.03 GiB wait=0.068 ms thread=382.134 ms read=2.03 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=25 tokens=2048 threads=8 ranges=24 bytes=2.03 GiB wait=0.030 ms thread=407.306 ms read=2.03 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=26 tokens=2048 threads=8 ranges=24 bytes=2.03 GiB wait=104.550 ms thread=370.726 ms read=2.03 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=27 tokens=2048 threads=8 ranges=24 bytes=2.06 GiB wait=0.025 ms thread=399.974 ms read=2.06 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=28 tokens=2048 threads=8 ranges=24 bytes=2.03 GiB wait=0.063 ms thread=382.271 ms read=2.03 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=29 tokens=2048 threads=8 ranges=24 bytes=2.03 GiB wait=0.082 ms thread=412.845 ms read=2.03 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=30 tokens=2048 threads=8 ranges=24 bytes=2.03 GiB wait=101.680 ms thread=458.605 ms read=2.03 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=31 tokens=2048 threads=8 ranges=24 bytes=2.06 GiB wait=0.037 ms thread=403.521 ms read=2.06 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=32 tokens=2048 threads=8 ranges=24 bytes=2.03 GiB wait=0.048 ms thread=369.882 ms read=2.03 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=33 tokens=2048 threads=8 ranges=24 bytes=2.03 GiB wait=0.102 ms thread=380.162 ms read=2.03 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=34 tokens=2048 threads=8 ranges=24 bytes=2.03 GiB wait=0.074 ms thread=395.513 ms read=2.03 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=35 tokens=2048 threads=8 ranges=24 bytes=2.06 GiB wait=118.218 ms thread=403.106 ms read=2.06 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=36 tokens=2048 threads=8 ranges=24 bytes=2.03 GiB wait=0.069 ms thread=384.720 ms read=2.03 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=37 tokens=2048 threads=8 ranges=24 bytes=2.03 GiB wait=0.034 ms thread=412.602 ms read=2.03 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=38 tokens=2048 threads=8 ranges=24 bytes=2.03 GiB wait=118.402 ms thread=407.093 ms read=2.03 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=39 tokens=2048 threads=8 ranges=24 bytes=2.06 GiB wait=0.037 ms thread=385.606 ms read=2.06 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=40 tokens=2048 threads=8 ranges=24 bytes=2.03 GiB wait=0.093 ms thread=400.007 ms read=2.03 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=41 tokens=2048 threads=8 ranges=24 bytes=2.03 GiB wait=110.990 ms thread=377.799 ms read=2.03 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=42 tokens=2048 threads=8 ranges=24 bytes=2.03 GiB wait=0.263 ms thread=415.576 ms read=2.03 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=43 tokens=2048 threads=8 ranges=24 bytes=2.06 GiB wait=0.056 ms thread=470.140 ms read=2.06 GiB ok=1
+ds4: Metal streaming prefill layer pread layer=44 tokens=2048 threads=8 ranges=24 bytes=2.03 GiB wait=0.035 ms thread=380.627 ms read=2.03 GiB ok=1
