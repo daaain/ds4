@@ -21,7 +21,11 @@ plot() {          # plot OUT_PREFIX [args...]
   done
   [ $missing -eq 1 ] && return 0
   rm -f "$TMP"/compare_prefill.svg "$TMP"/compare_decode.svg "$TMP"/compare_kvcache.svg 2>/dev/null || true
-  python3 plot_comparison.py --out-dir "$TMP" --machine "MacBook Pro M3 Max" "$@"
+  # Writing speed is the steady rate, matching the tables in the docs: the
+  # overall rate folds in the first-token wait, which under SSD streaming is
+  # over a second and would swamp the comparison.
+  python3 plot_comparison.py --out-dir "$TMP" --machine "MacBook Pro M3 Max" \
+    --decode-column gen_steady_tps "$@"
   # Only the long-context set publishes a KV-cache chart: the cache depends on
   # the model and the context length, not on where the weights live, so the
   # other sets would just redraw the same two lines over a shorter range.

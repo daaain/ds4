@@ -212,6 +212,12 @@ def main():
                     help="omit this run from the KV-cache chart; use for runs "
                          "whose cache is identical to another's, since an "
                          "exactly overlapping line reads as a missing series")
+    ap.add_argument("--decode-column", default="gen_tps",
+                    choices=["gen_tps", "gen_steady_tps"],
+                    help="CSV column for the writing-speed chart: gen_tps is "
+                         "the overall rate including the wait for the first "
+                         "token, gen_steady_tps the rate once the reply has "
+                         "started")
     ap.add_argument("--like", action="append", default=[], metavar="NAME=OTHER",
                     help="draw run NAME dashed in run OTHER's colour; use for "
                          "a second configuration of the same model, so colour "
@@ -252,9 +258,12 @@ def main():
     written = []
 
     written.append(render(
-        [(n, read_series(p, "gen_tps", min_ctx=args.min_ctx)) for n, p in runs],
+        [(n, read_series(p, args.decode_column, min_ctx=args.min_ctx))
+         for n, p in runs],
         "Writing speed" + suffix,
-        "Tokens produced per second while answering. Higher is better.",
+        ("Tokens produced per second once the answer has started. "
+         if args.decode_column == "gen_steady_tps" else
+         "Tokens produced per second while answering. ") + "Higher is better.",
         "Tokens per second", out / "compare_decode.svg", styles=styles))
 
     written.append(render(
